@@ -111,9 +111,11 @@ static DWORD WINAPI Worker(LPVOID)
                 r.tex.height = sr.height;
                 r.tex.format = sr.format;
                 char path[256];
-                sprintf_s(path, "PixelSample #%llu max=%.3f overWhite=%.4f bright=%.4f meanLuma=%.2f",
-                          static_cast<unsigned long long>(sr.sampleCount), sr.maxChannel,
-                          sr.overWhiteFrac, sr.brightFrac, sr.meanLuma);
+                sprintf_s(path,
+                          "PixelSample #%llu fmt=%d max=%.3f overWhite=%.4f bright=%.4f underBlack=%.4f meanLuma=%.2f",
+                          static_cast<unsigned long long>(sr.sampleCount),
+                          static_cast<int>(sr.format), sr.maxChannel,
+                          sr.overWhiteFrac, sr.brightFrac, sr.underBlackFrac, sr.meanLuma);
                 r.path = path;
                 r.force = true;
                 ProbeLogger::Instance().LogFrame(r);

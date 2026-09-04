@@ -321,12 +321,32 @@ bool SampleCore(ID3D11Device* device, ID3D11Texture2D* tex, const TextureInfo& i
                 out->sampleCount = g_sampleCount;
 
                 const UINT w = info.width, h = info.height;
-                // 降采样到 ~256 列，控制 Map 读取耗时
-                UINT step = (w / 256) | 1;
-                UINT64 over = 0, total = 0;
-                double sumLuma = 0.0;
-                float maxCh = 0.f;
-                if (info.format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                if (info.format == DXGI_FORMAT_NV12) {
+                    // NV12：Y 平面统计，用于判定 RGB→YUV 的 full/limited range
+                    UINT step = (w / 256) | 1;
+                    UINT64 over = 0, under = 0, total = 0;
+                    double sumY = 0.0;
+                    float maxY = 0.f;
+                    for (UINT y = 0; y < h; y += step) {
+                        const BYTE* row = reinterpret_cast<const BYTE*>(mapped.pData) + y * mapped.RowPitch;
+                        for (UINT x = 0; x < w; x += step) {
+                            float Y = row[x];
+                            if (Y > maxY) maxY = Y;
+                            if (Y >= 250.f) ++over;
+                            if (Y <= 16.f) ++under;
+                            sumY += Y;
+                            ++total;
+                        }
+                    }
+                    out->maxChannel = maxY;
+                    out->meanLuma = total ? static_cast<float>(sumY / total) : 0.f;
+                    out->brightFrac = total ? static_cast<float>(static_cast<double>(over) / total) : 0.f;
+                    out->underBlackFrac = total ? static_cast<float>(static_cast<double>(under) / total) : 0.f;
+                } else if (info.format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                    UINT step = (w / 256) | 1;
+                    UINT64 over = 0, total = 0;
+                    double sumLuma = 0.0;
+                    float maxCh = 0.f;
                     for (UINT y = 0; y < h; y += step) {
                         const unsigned short* row =
                             reinterpret_cast<const unsigned short*>(
@@ -342,7 +362,13 @@ bool SampleCore(ID3D11Device* device, ID3D11Texture2D* tex, const TextureInfo& i
                         }
                     }
                     out->overWhiteFrac = total ? static_cast<float>(static_cast<double>(over) / total) : 0.f;
+                    out->maxChannel = maxCh;
+                    out->meanLuma = total ? static_cast<float>(sumLuma / total) : 0.f;
                 } else {
+                    UINT step = (w / 256) | 1;
+                    UINT64 over = 0, total = 0;
+                    double sumLuma = 0.0;
+                    float maxCh = 0.f;
                     for (UINT y = 0; y < h; y += step) {
                         const BYTE* row = reinterpret_cast<const BYTE*>(mapped.pData) + y * mapped.RowPitch;
                         for (UINT x = 0; x < w; x += step) {
@@ -356,9 +382,9 @@ bool SampleCore(ID3D11Device* device, ID3D11Texture2D* tex, const TextureInfo& i
                         }
                     }
                     out->brightFrac = total ? static_cast<float>(static_cast<double>(over) / total) : 0.f;
+                    out->maxChannel = maxCh;
+                    out->meanLuma = total ? static_cast<float>(sumLuma / total) : 0.f;
                 }
-                out->maxChannel = maxCh;
-                out->meanLuma = total ? static_cast<float>(sumLuma / total) : 0.f;
                 ctx->Unmap(staging, 0);
                 ok = true;
             }
@@ -425,13 +451,18 @@ bool D3D11Observer::TakePixelSample(PixelSampleResult* out)
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_singleThreadedDeviceSeen) return false; // SINGLETHREADED 设备禁止跨线程
-        // 两遍选择：优先 FP16（scRGB 高光证据价值最高），否则取最新 BGRA/RGBA
-        for (int pass = 0; pass < 2 && !tex; ++pass) {
+        // 选择：偶数次优先 FP16（scRGB 高光证据），其次 BGRA；奇数次优先 NV12（range 判定）
+        bool preferNV12 = (g_sampleCount % 2) == 1;
+        for (int pass = 0; pass < 3 && !tex; ++pass) {
             for (auto it = g_registered.rbegin(); it != g_registered.rend(); ++it) {
                 bool isFP16 = it->info.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
                 bool isBGRA = it->info.format == DXGI_FORMAT_B8G8R8A8_UNORM ||
                               it->info.format == DXGI_FORMAT_R8G8B8A8_UNORM;
-                if ((pass == 0 && isFP16) || (pass == 1 && isBGRA)) {
+                bool isNV12 = it->info.format == DXGI_FORMAT_NV12;
+                bool pick = (pass == 0 && ((preferNV12 && isNV12) || (!preferNV12 && isFP16))) ||
+                            (pass == 1 && ((preferNV12 && isFP16) || (!preferNV12 && isBGRA))) ||
+                            (pass == 2 && ((preferNV12 && isBGRA) || (!preferNV12 && isNV12)));
+                if (pick) {
                     it->tex->AddRef(); // 双保险（Release 钩子已同步回收注册表）
                     tex = it->tex;
                     info = it->info;

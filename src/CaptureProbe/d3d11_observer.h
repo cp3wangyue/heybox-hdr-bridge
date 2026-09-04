@@ -29,10 +29,11 @@ struct PixelSampleResult {
     ID3D11Texture2D* source = nullptr;
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-    float maxChannel = 0.f;      // 全帧最大单通道值（FP16 有效；BGRA 为 0~255 归一前原值）
+    float maxChannel = 0.f;      // 全帧最大单通道值（FP16 有效；BGRA/NV12-Y 为原值域）
     float overWhiteFrac = 0.f;   // FP16：max(R,G,B) > 1.0 的像素占比（HDR 高光存在性）
-    float brightFrac = 0.f;      // BGRA：亮度 >= 250/255 的像素占比（接近裁白）
-    float meanLuma = 0.f;        // 平均亮度（Rec.709 系数，线性域 FP16 / 0-255 BGRA）
+    float brightFrac = 0.f;      // BGRA：亮度 >= 250/255 占比；NV12：Y >= 250 占比
+    float underBlackFrac = 0.f;  // NV12：Y <= 16 占比（limited-range 黑位检查）
+    float meanLuma = 0.f;        // 平均亮度（Rec.709 系数；FP16 线性域 / BGRA 0-255 / NV12 Y 0-255）
     UINT64 sampleCount = 0;      // 本会话累计采样次数
 };
 
