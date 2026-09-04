@@ -2,6 +2,7 @@
 add_library(captureprobe STATIC
     texture_info.cpp
     hdr_state.cpp
+    hdr_control.cpp
     probe_logger.cpp
 )
 # 以 "CaptureProbe/xxx.h" 方式引用，供 Hook/Integration 复用

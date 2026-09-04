@@ -3,18 +3,19 @@ capture_format_spy (read-only)  backend=both duration=3s
 --- adapter 0: NVIDIA GeForce RTX 5070 Ti (LUID 00000000:0000FD8D) ---
 
 ===== DXGI Desktop Duplication =====
-    output \\.\DISPLAY1 desktop=(0,0)-(3840,2160) bits/color=10 colorspace=RGB_FULL_G2084_NONE_P2020  HDR-OUTPUT-ACTIVE
+    output \\.\DISPLAY1 desktop=(0,0)-(3840,2160) bits/color=10 colorspace=RGB_FULL_G22_NONE_P709
+    (system HDR setting should be compared with Settings > Display > HDR)
     [DEV] D3D11 device ok, feature level 0xB000
     default duplication: 3840x2160 fmt=R16G16B16A16_FLOAT rotation=1 desktopInSysMem=0
     [DDA-default] frame#1 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
     [DDA-default] frame#2 tex: 3840x2160 fmt=B8G8R8A8_UNORM
     [DDA-default] frame#3 tex: 3840x2160 fmt=B8G8R8A8_UNORM
-    [DDA-default] sampled 5 frames, distinct formats: R16G16B16A16_FLOAT B8G8R8A8_UNORM
+    [DDA-default] sampled 130 frames, distinct formats: R16G16B16A16_FLOAT B8G8R8A8_UNORM
     DuplicateOutput1(FP16): SUCCEEDED -> HDR-capable duplication available
     [DDA-fp16] frame#1 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
     [DDA-fp16] frame#2 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
     [DDA-fp16] frame#3 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
-    [DDA-fp16] sampled 4 frames, distinct formats: R16G16B16A16_FLOAT
+    [DDA-fp16] sampled 6 frames, distinct formats: R16G16B16A16_FLOAT
 
 ===== Windows.Graphics.Capture =====
     [DEV] D3D11 device ok, feature level 0xB000
@@ -23,7 +24,7 @@ capture_format_spy (read-only)  backend=both duration=3s
     [WGC pool B8G8R8A8_UNORM] 3 frames, distinct tex formats: B8G8R8A8_UNORM
     [WGC pool R16G16B16A16_FLOAT] frame#0 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
     [WGC pool R16G16B16A16_FLOAT] frame#1 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
-    [WGC pool R16G16B16A16_FLOAT] 2 frames, distinct tex formats: R16G16B16A16_FLOAT
+    [WGC pool R16G16B16A16_FLOAT] 3 frames, distinct tex formats: R16G16B16A16_FLOAT
     [WGC pool R10G10B10A2_UNORM] create/start failed hr=0x80070057 (参数错误。)
 
 --- adapter 1: NVIDIA GeForce RTX 5070 Ti (LUID 00000000:0001B162) ---
@@ -59,7 +60,7 @@ capture_format_spy (read-only)  backend=both duration=3s
     [WGC pool B8G8R8A8_UNORM] 3 frames, distinct tex formats: B8G8R8A8_UNORM
     [WGC pool R16G16B16A16_FLOAT] frame#0 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
     [WGC pool R16G16B16A16_FLOAT] frame#1 tex: 3840x2160 fmt=R16G16B16A16_FLOAT
-    [WGC pool R16G16B16A16_FLOAT] 2 frames, distinct tex formats: R16G16B16A16_FLOAT
+    [WGC pool R16G16B16A16_FLOAT] 3 frames, distinct tex formats: R16G16B16A16_FLOAT
     [WGC pool R10G10B10A2_UNORM] create/start failed hr=0x80070057 (参数错误。)
 
 done. Re-run with HDR off/on and diff formats; save logs under docs/recon/.

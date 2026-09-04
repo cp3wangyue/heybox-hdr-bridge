@@ -66,20 +66,25 @@ cmake --preset windows-msvc-x64
 cmake --build build/msvc-x64 --config Release
 
 # 1) P0 环境指纹：记录系统、GPU、驱动、HDR 状态、小黑盒版本与哈希
-powershell -File tools/env_fingerprint.ps1 -ClientPath "<小黑盒安装目录>"
+powershell -File tools/env_fingerprint.ps1 -ClientPath "C:\Users\22983\AppData\Local\Qingfeng\HeyboxChat"
 # 输出写入 docs/recon/env-fingerprint-<时间戳>.md / .json
 
-# 2) P0 HDR 状态快速核对（HDR 开/关各跑一次，截图留档）
-powershell -File tools/hdr_state.ps1
+# 2) P0 HDR 状态查询 / 开关（A/B 自动化；测试后记得恢复）
+build\msvc-x64\tools\hdr_ctl\Release\hdr_ctl.exe status
+build\msvc-x64\tools\hdr_ctl\Release\hdr_ctl.exe off   # 屏幕会闪一下
+build\msvc-x64\tools\hdr_ctl\Release\hdr_ctl.exe on
 
 # 3) 系统级捕获格式探测（只读，独立进程，不碰客户端）：
-#    HDR Off / On 各跑一次，确认 WGC / Duplication 给出的纹理格式是否变化
-build\msvc-x64\Release\capture_format_spy.exe --backend both --duration 10
+#    HDR Off / On 各跑一次，确认捕获纹理格式与色彩空间（结果存 docs/recon/）
+build\msvc-x64\tools\capture_format_spy\Release\capture_format_spy.exe --backend both --duration 3
 
-# 4) P1 模块清单快照与 diff：共享前后各抓一次
-powershell -File tools/module_diff.ps1 -Snapshot -Tag idle -ProcessName xiaoheihe
+# 4) P1 静态侦察：对客户端二进制做导入表/字符串检索
+python tools/pe_recon.py "C:\Users\22983\AppData\Local\Qingfeng\HeyboxChat" docs/recon/pe-recon.md
+
+# 5) P1 模块清单快照与 diff：共享前后各抓一次（支持 Electron 多进程）
+powershell -File tools/module_diff.ps1 -Snapshot -Tag idle    -ProcessName HeyboxChat
 #   （开始屏幕共享后）
-powershell -File tools/module_diff.ps1 -Snapshot -Tag sharing -ProcessName xiaoheihe
+powershell -File tools/module_diff.ps1 -Snapshot -Tag sharing -ProcessName HeyboxChat
 powershell -File tools/module_diff.ps1 -Diff idle,sharing
 ```
 

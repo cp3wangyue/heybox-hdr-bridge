@@ -4,8 +4,8 @@
 
 #include <dxgi.h>
 #include <wrl/client.h>
-#include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace hdrfix {
 
@@ -13,10 +13,14 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-// wingdi.h 的 DISPLAYCONFIG 设备信息请求类型
+// wingdi.h 的 DISPLAYCONFIG 设备信息请求类型（务必与 SDK 头一致！）
 constexpr UINT32 kGetSourceName = 1;
+constexpr UINT32 kGetAdvancedColorInfo = 9;   // 旧版查询（注意不是 12）
+constexpr UINT32 kSetAdvancedColorState = 10; // 旧版 HDR/高级色彩开关
 constexpr UINT32 kGetSdrWhiteLevel = 11;
-constexpr UINT32 kGetAdvancedColorInfo = 12;
+constexpr UINT32 kGetMonitorSpecialization = 12;
+constexpr UINT32 kGetAdvancedColorInfo2 = 15; // Win11：含 highDynamicRangeUserEnabled / activeColorMode
+constexpr UINT32 kSetHdrState = 16;           // Win11：HDR 开关
 constexpr UINT32 kQdcOnlyActivePaths = 2;
 
 struct DisplayConfigSourceName {
@@ -24,10 +28,29 @@ struct DisplayConfigSourceName {
     WCHAR viewGdiDeviceName[32]; // CCHDEVICENAME
 };
 
-bool GetSdrWhiteLevelFor(const WCHAR* gdiDeviceName, float* outNits)
-{
-    *outNits = 0.f;
+struct AdvancedColorInfo2 {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    union {
+        struct {
+            UINT32 advancedColorSupported : 1;
+            UINT32 advancedColorActive : 1;
+            UINT32 reserved1 : 1;
+            UINT32 advancedColorLimitedByPolicy : 1;
+            UINT32 highDynamicRangeSupported : 1;
+            UINT32 highDynamicRangeUserEnabled : 1;
+            UINT32 wideColorSupported : 1;
+            UINT32 wideColorUserEnabled : 1;
+            UINT32 reserved : 24;
+        } bits;
+        UINT32 value;
+    } u;
+    DISPLAYCONFIG_ADVANCED_COLOR_MODE activeColorMode;
+};
 
+enum class PathKind { Source, Target };
+
+bool FindPathForGdiDevice(const WCHAR* gdiDeviceName, DISPLAYCONFIG_PATH_INFO* outPath)
+{
     UINT32 numPaths = 0, numModes = 0;
     if (::GetDisplayConfigBufferSizes(kQdcOnlyActivePaths, &numPaths, &numModes) != ERROR_SUCCESS) {
         return false;
@@ -38,7 +61,6 @@ bool GetSdrWhiteLevelFor(const WCHAR* gdiDeviceName, float* outNits)
                              modes.data(), nullptr) != ERROR_SUCCESS) {
         return false;
     }
-
     for (UINT32 i = 0; i < numPaths; ++i) {
         DisplayConfigSourceName src{};
         src.header.type = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(kGetSourceName);
@@ -48,70 +70,38 @@ bool GetSdrWhiteLevelFor(const WCHAR* gdiDeviceName, float* outNits)
         if (::DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) {
             continue;
         }
-        if (wcscmp(src.viewGdiDeviceName, gdiDeviceName) != 0) {
-            continue;
+        if (wcscmp(src.viewGdiDeviceName, gdiDeviceName) == 0) {
+            *outPath = paths[i];
+            return true;
         }
-        DISPLAYCONFIG_SDR_WHITE_LEVEL sdr{};
-        sdr.header.type = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(kGetSdrWhiteLevel);
-        sdr.header.size = sizeof(sdr);
-        sdr.header.adapterId = paths[i].targetInfo.adapterId;
-        sdr.header.id = paths[i].targetInfo.id;
-        if (::DisplayConfigGetDeviceInfo(&sdr.header) != ERROR_SUCCESS) {
-            return false;
-        }
-        // SDRWhiteLevel 单位为 1/1000 × 80 nits：nits = value * 80 / 1000
-        *outNits = sdr.SDRWhiteLevel * 80.0f / 1000.0f;
-        return true;
     }
     return false;
 }
 
-bool GetAdvancedColorFor(const WCHAR* gdiDeviceName, bool* supported, bool* enabled)
+bool GetSdrWhiteLevelFor(const DISPLAYCONFIG_PATH_INFO& path, float* outNits)
 {
-    *supported = false;
-    *enabled = false;
-
-    UINT32 numPaths = 0, numModes = 0;
-    if (::GetDisplayConfigBufferSizes(kQdcOnlyActivePaths, &numPaths, &numModes) != ERROR_SUCCESS) {
+    *outNits = 0.f;
+    DISPLAYCONFIG_SDR_WHITE_LEVEL sdr{};
+    sdr.header.type = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(kGetSdrWhiteLevel);
+    sdr.header.size = sizeof(sdr);
+    sdr.header.adapterId = path.targetInfo.adapterId;
+    sdr.header.id = path.targetInfo.id;
+    if (::DisplayConfigGetDeviceInfo(&sdr.header) != ERROR_SUCCESS) {
         return false;
     }
-    std::vector<DISPLAYCONFIG_PATH_INFO> paths(numPaths);
-    std::vector<DISPLAYCONFIG_MODE_INFO> modes(numModes);
-    if (::QueryDisplayConfig(kQdcOnlyActivePaths, &numPaths, paths.data(), &numModes,
-                             modes.data(), nullptr) != ERROR_SUCCESS) {
-        return false;
-    }
+    // SDRWhiteLevel 单位为 1/1000 × 80 nits：nits = value * 80 / 1000
+    *outNits = sdr.SDRWhiteLevel * 80.0f / 1000.0f;
+    return true;
+}
 
-    constexpr UINT32 kAcSupported = 0x1;
-    constexpr UINT32 kAcEnabled = 0x2;
-
-    for (UINT32 i = 0; i < numPaths; ++i) {
-        DisplayConfigSourceName src{};
-        src.header.type = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(kGetSourceName);
-        src.header.size = sizeof(src);
-        src.header.adapterId = paths[i].sourceInfo.adapterId;
-        src.header.id = paths[i].sourceInfo.id;
-        if (::DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) {
-            continue;
-        }
-        if (wcscmp(src.viewGdiDeviceName, gdiDeviceName) != 0) {
-            continue;
-        }
-        DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO aci{};
-        aci.header.type = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(kGetAdvancedColorInfo);
-        aci.header.size = sizeof(aci);
-        aci.header.adapterId = paths[i].targetInfo.adapterId;
-        aci.header.id = paths[i].targetInfo.id;
-        if (::DisplayConfigGetDeviceInfo(&aci.header) != ERROR_SUCCESS) {
-            return false;
-        }
-        *supported = (aci.value & kAcSupported) != 0;
-        *enabled = (aci.value & kAcEnabled) != 0;
-        // 部分驱动在开启时只置 ENABLED 位
-        *supported = *supported || *enabled;
-        return true;
-    }
-    return false;
+bool GetAdvancedColor2For(const DISPLAYCONFIG_PATH_INFO& path, AdvancedColorInfo2* out)
+{
+    *out = {};
+    out->header.type = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(kGetAdvancedColorInfo2);
+    out->header.size = sizeof(AdvancedColorInfo2);
+    out->header.adapterId = path.targetInfo.adapterId;
+    out->header.id = path.targetInfo.id;
+    return ::DisplayConfigGetDeviceInfo(&out->header) == ERROR_SUCCESS;
 }
 
 } // namespace
@@ -149,16 +139,23 @@ std::vector<OutputHdrState> QueryOutputHdrStates()
                 }
             }
 
-            float nits = 0.f;
-            if (GetSdrWhiteLevelFor(state.gdiDeviceName.c_str(), &nits) && nits > 0.f) {
-                state.sdrWhiteNits = nits;
+            DISPLAYCONFIG_PATH_INFO path{};
+            if (FindPathForGdiDevice(state.gdiDeviceName.c_str(), &path)) {
+                float nits = 0.f;
+                if (GetSdrWhiteLevelFor(path, &nits) && nits > 0.f) {
+                    state.sdrWhiteNits = nits;
+                }
+                AdvancedColorInfo2 aci2{};
+                if (GetAdvancedColor2For(path, &aci2)) {
+                    state.hdrSupported = aci2.u.bits.advancedColorSupported != 0;
+                    state.hdrUserEnabled = aci2.u.bits.highDynamicRangeUserEnabled != 0;
+                    state.wideColorUser = aci2.u.bits.wideColorUserEnabled != 0;
+                }
             }
-            GetAdvancedColorFor(state.gdiDeviceName.c_str(), &state.hdrSupported, &state.hdrEnabled);
-            // HDR 开启时 DXGI 输出颜色空间会切换到 PQ；以此兜底
-            if (!state.hdrEnabled &&
-                state.colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
-                state.hdrEnabled = true;
-            }
+
+            // 权威判定：输出色彩空间切换到 PQ 即 HDR 生效（用户开关与实际生效可能短暂不一致）
+            state.hdrEnabled =
+                state.colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 
             states.push_back(std::move(state));
         }

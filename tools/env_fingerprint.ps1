@@ -82,7 +82,8 @@ function Get-ClientDir {
 $clientDir = Get-ClientDir -Explicit $ClientPath
 $fp.client = [ordered]@{ installDir = $clientDir; files = @() }
 if ($clientDir) {
-    $files = Get-ChildItem -Path $clientDir -File -ErrorAction SilentlyContinue |
+    # 递归收集全部 EXE/DLL（Electron/RTC 客户端的关键捕获与编码 DLL 在子目录）
+    $files = Get-ChildItem -Path $clientDir -File -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -match '^\.(exe|dll)$' }
     foreach ($f in $files) {
         $ver = $f.VersionInfo
