@@ -66,12 +66,16 @@
 
 ## Gate P1 自检
 
-- [x] 能明确回答：共享时新增/活跃的关键模块有哪些（静态+idle 组合判定：RTC SDK + d3d11/dxgi + WGC 组件，待 sharing 快照最终确认）
-- [x] 至少找到一类候选捕获 API（WGC 与 DDA 均有）和一类候选编码器（NVENC/ffmpeg/openh264）
-- 待办：用户启动一次真实屏幕共享后跑 `module_diff.ps1 -Snapshot -Tag sharing`，与 idle diff，最终敲定活跃 SDK（VeRTC vs TRTC 可能按房间/业务分流）
+- [x] 能明确回答：共享时新增/活跃的关键模块有哪些
+- [x] 至少找到一类候选捕获 API 和一类候选编码器
+- 动态确认（2026-09-05 共享态快照 + DDA 冲突探针，见 test-reports/round-20260905-sharing-recon.md）：
+  **VeRTC 通道实锤**。共享时新增 41 模块，全部集中在单个进程（pid 16428）：
+  `VolcEngineRTC.dll v3.58.1.63260` + `GraphicsCapture.dll`(WGC) + `d3d11/dxgi/d3d9/dxva2` +
+  `nvEncodeAPI64.dll`(NVENC 硬编) + `RTCFFmpeg.dll`/`openh264-4.dll`(软编后备)。
+  TRTC(liteav) 未加载。独立进程 DuplicateOutput 成功 → 客户端未占用 DDA → **捕获 = WGC**。
 
-## 关键悬念（进 P2 前必须动态确认）
+## 关键悬念解答进度
 
-1. 共享走 VeRTC 还是 TRTC（或不同业务不同 SDK）
-2. 捕获 API 实际选型（WGC vs DDA vs GDI）与请求的纹理格式（BGRA8 vs FP16）
-3. SDK 的 HDR/PQ 字符串是否意味着它已有部分色彩处理（否则过亮根因纯粹是"无 tone map"）
+1. ~~共享走 VeRTC 还是 TRTC~~ → **VeRTC**（TRTC 静态存在但本场景未加载；换业务线需复验）
+2. ~~捕获 API 实际选型~~ → **WGC**（GraphicsCapture.dll 加载 + DDA 未被占用；请求的纹理格式待 Probe）
+3. SDK 的 HDR/PQ 字符串是否意味着已有色彩处理 → 待 P2 帧级证据（捕获格式 + 编码器输入格式 + 远端表现对照）
