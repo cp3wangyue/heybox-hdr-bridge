@@ -18,6 +18,7 @@
 #include "CaptureProbe/d3d11_observer.h"
 #include "CaptureProbe/hdr_state.h"
 #include "CaptureProbe/probe_logger.h"
+#include "CaptureProbe/wgc_observer.h"
 
 using namespace hdrfix;
 
@@ -79,6 +80,15 @@ static DWORD WINAPI Worker(LPVOID)
         ProbeLogger::Instance().LogFrame(r);
     }
 
+    // P3：并行 FP16 观察池（独立设备 + 独立会话，不接触 SDK 路径）
+    WgcObserver& wgc = WgcObserver::Instance();
+    if (wgc.Start()) {
+        FrameLogRecord r;
+        r.path = "WGC:observer launched";
+        r.force = true;
+        ProbeLogger::Instance().LogFrame(r);
+    }
+
     // 等待目标模块出现（共享会话建立时 VeRTC 才加载）
     D3D11Observer& observer = D3D11Observer::Instance();
     ObserverConfig cfg;
@@ -124,6 +134,7 @@ static DWORD WINAPI Worker(LPVOID)
     }
 
     observer.Stop();
+    wgc.Stop();
     FrameLogRecord r;
     r.path = "ProbeStop";
     r.force = true;

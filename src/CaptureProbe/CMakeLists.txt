@@ -16,8 +16,8 @@ target_link_libraries(probe_selftest PRIVATE captureprobe)
 # 探针迭代期间旧版本可能仍被目标进程加载锁定，因此允许用版本化文件名构建：
 #   cmake -DPROBE_VARIANT=2  ->  hdrfix_probe2.dll
 set(HDRFIX_PROBE_VARIANT "" CACHE STRING "probe dll 文件名后缀（避免旧实例文件锁）")
-add_library(hdrfix_probe SHARED probe_dll.cpp d3d11_observer.cpp iat_hook.cpp)
-target_link_libraries(hdrfix_probe PRIVATE captureprobe)
+add_library(hdrfix_probe SHARED probe_dll.cpp d3d11_observer.cpp iat_hook.cpp wgc_observer.cpp)
+target_link_libraries(hdrfix_probe PRIVATE captureprobe windowsapp)
 if(HDRFIX_PROBE_VARIANT)
     set_target_properties(hdrfix_probe PROPERTIES OUTPUT_NAME "hdrfix_probe${HDRFIX_PROBE_VARIANT}")
 endif()
