@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="D:\CodexPJ\HDR\hdr-share-fix\src\CaptureProbe\texture_info.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\CodexPJ\HDR\hdr-share-fix\src\CaptureProbe\hdr_state.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\CodexPJ\HDR\hdr-share-fix\src\CaptureProbe\hdr_control.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\CodexPJ\HDR\hdr-share-fix\src\CaptureProbe\probe_logger.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="D:\CodexPJ\HDR\hdr-share-fix\src\CaptureProbe\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{354143F7-C3B4-34A8-BCCA-4BB6049B7183}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

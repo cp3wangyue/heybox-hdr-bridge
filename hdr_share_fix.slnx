@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="b71cf03e-e17f-3873-93c2-ea1a6718df46" DefaultStartup="true">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="tools/capture_format_spy/capture_format_spy.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/captureprobe.vcxproj"/>
+		<BuildDependency Project="tools/hdr_ctl/hdr_ctl.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/hdrfix_probe.vcxproj"/>
+		<BuildDependency Project="tools/injector/injector.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/probe_selftest.vcxproj"/>
+		<BuildDependency Project="tools/injector/probe_testhost.vcxproj"/>
+		<BuildDependency Project="tests/ToneMapHarness/tone_map_harness.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="ed47e4e2-7fc8-36ae-8250-3d864f2ec9ec"/>
+	<Project Path="tools/capture_format_spy/capture_format_spy.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="755d2fb2-6268-3493-81cf-b6f94502989e">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="src/CaptureProbe/captureprobe.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="65651d6f-ea4b-3c53-b374-827bcd781bb9">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="tools/hdr_ctl/hdr_ctl.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9393d506-12dc-3dcd-bac7-1b195f007b82">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/captureprobe.vcxproj"/>
+	</Project>
+	<Project Path="src/CaptureProbe/hdrfix_probe.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="4097e5ce-6fad-3cb4-acd4-8b681fcafbc8">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/captureprobe.vcxproj"/>
+	</Project>
+	<Project Path="tools/injector/injector.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="17966f89-fa81-31b1-9b48-a6f299ce2553">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="src/CaptureProbe/probe_selftest.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9dd54ff7-12e8-335b-962e-e4eb34e1cfb1">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/captureprobe.vcxproj"/>
+	</Project>
+	<Project Path="tools/injector/probe_testhost.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="9ae2095f-b9b5-303c-8069-33c4a101bb83">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="tests/ToneMapHarness/tone_map_harness.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="6a553b76-ddc1-3ca0-8b9b-f71393fc503e">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="src/CaptureProbe/captureprobe.vcxproj"/>
+	</Project>
+</Solution>

@@ -21,8 +21,9 @@ bool ProbeLogger::Start(const std::wstring& filePath, std::chrono::milliseconds 
     if (s_->file) {
         return true;
     }
-    errno_t err = _wfopen_s(&s_->file, filePath.c_str(), L"w");
-    if (err != 0 || !s_->file) {
+    // _SH_DENYNO：允许外部工具在采证期间读取日志
+    s_->file = _wfsopen(filePath.c_str(), L"w", _SH_DENYNO);
+    if (!s_->file) {
         return false;
     }
     s_->minInterval = minInterval;

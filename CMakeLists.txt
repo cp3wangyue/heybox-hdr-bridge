@@ -14,6 +14,7 @@ endif()
 add_subdirectory(src/CaptureProbe)
 add_subdirectory(tools/capture_format_spy)
 add_subdirectory(tools/hdr_ctl)
+add_subdirectory(tools/injector)
 add_subdirectory(tests/ToneMapHarness)
 
 # 以下子目录在对应 Gate 通过后加入构建（当前为占位说明）：
