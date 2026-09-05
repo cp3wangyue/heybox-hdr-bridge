@@ -10,14 +10,16 @@ if(MSVC)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# 观察器先行（Gate P2 前只做只读探测）
+# P2~P6 全栈模块：探测、色调映射、Hook、集成、配置与诊断、色彩检测
 add_subdirectory(src/CaptureProbe)
+add_subdirectory(src/ToneMap)
+add_subdirectory(src/Hook)
+add_subdirectory(src/Diagnostics)
+add_subdirectory(src/ColorDetect)
+add_subdirectory(src/Integration)
 add_subdirectory(tools/capture_format_spy)
 add_subdirectory(tools/hdr_ctl)
 add_subdirectory(tools/injector)
 add_subdirectory(tests/ToneMapHarness)
+add_subdirectory(src/Bootstrap)
 
-# 以下子目录在对应 Gate 通过后加入构建（当前为占位说明）：
-#   src/Hook          — Gate P2/P3 之后
-#   src/ToneMap       — Gate P2 之后（P4）
-#   src/Integration   — Gate P3/P4 之后（P5）

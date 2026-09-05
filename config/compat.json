@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "hdrfix-compatibility-database",
+  "version": "1.0.0",
+  "description": "小黑盒 HDR 屏幕共享色调映射补丁兼容性白名单",
+  "allowedClients": [
+    {
+      "name": "HeyboxChat",
+      "version": "1.56.0",
+      "status": "Verified",
+      "verifiedModules": [
+        {
+          "module": "VolcEngineRTC.dll",
+          "version": "3.58.1.63260",
+          "status": "Verified"
+        }
+      ]
+    }
+  ]
+}
