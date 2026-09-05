@@ -1,64 +1,82 @@
-// dllmain.cpp — P8 交付核心插件模块 (hdrfix.dll)
+// dllmain.cpp — HEYBOX HDR Bridge 核心插件入口
 //
-// 负责在注入或加载到宿主进程（HeyboxChat.exe / VolcEngineRTC.dll）后自动执行：
-//   1. SafetyGuard 初始化与自检（版本锁、Crash Marker、Kill Switch 状态）；
-//   2. 读取与应用 config/hdrfix.ini；
-//   3. 挂载 WgcHookManager 拦截 RoGetActivationFactory；
-//   4. 进程卸载时安全回退与清理。
+// 原则：DllMain 中只做最小工作，避免在 Loader Lock 下读取配置、初始化复杂对象或安装 Hook。
+// 真正初始化由后台线程完成；进程正常卸载时只做轻量清理。
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <string>
 
-#include "CaptureProbe/hdr_state.h"
 #include "Diagnostics/ConfigManager.h"
 #include "Diagnostics/SafetyGuard.h"
 #include "Integration/WgcHookManager.h"
 
 using namespace hdrfix;
 
-static HMODULE g_module = nullptr;
+namespace {
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+HMODULE g_module = nullptr;
+HANDLE g_initThread = nullptr;
+
+DWORD WINAPI InitializeBridge(LPVOID param)
 {
-    (void)lpReserved;
-    switch (ul_reason_for_call)
+    HMODULE module = static_cast<HMODULE>(param);
+
+    // 1. 先读取 DLL 同目录配置。
+    wchar_t dllPath[MAX_PATH]{};
+    ::GetModuleFileNameW(module, dllPath, MAX_PATH);
+    std::wstring dir(dllPath);
+    const size_t pos = dir.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        dir.resize(pos + 1);
+    } else {
+        dir.clear();
+    }
+    ConfigManager::Instance().Load(dir + L"hdrfix.ini");
+
+    // 2. 初始化安全防护与 Crash Marker。
+    SafetyGuard::Instance().Initialize();
+
+    // 3. 守门通过后再安装 WGC Hook。
+    if (SafetyGuard::Instance().CanIntercept()) {
+        WgcHookManager::Instance().Install();
+    }
+
+    return 0;
+}
+
+} // namespace
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
+{
+    switch (reason)
     {
     case DLL_PROCESS_ATTACH:
         g_module = hModule;
         ::DisableThreadLibraryCalls(hModule);
 
-        // 1. 初始化安全防护网 (Crash Marker, Kill Switch)
-        SafetyGuard::Instance().Initialize();
-
-        // 2. 加载配置文件 (优先加载同目录下的 hdrfix.ini)
-        {
-            wchar_t dllPath[MAX_PATH]{};
-            ::GetModuleFileNameW(hModule, dllPath, MAX_PATH);
-            std::wstring dir(dllPath);
-            size_t pos = dir.find_last_of(L"\\/");
-            if (pos != std::wstring::npos) {
-                dir = dir.substr(0, pos + 1);
-            }
-            ConfigManager::Instance().Load(dir + L"hdrfix.ini");
-        }
-
-        // 3. 守门检查：通过后才安装 Hook
-        if (SafetyGuard::Instance().CanIntercept()) {
-            WgcHookManager::Instance().Install();
+        // 仅创建初始化线程并立即返回；不在 Loader Lock 下执行 Hook/配置/COM 逻辑。
+        g_initThread = ::CreateThread(nullptr, 0, InitializeBridge, hModule, 0, nullptr);
+        if (g_initThread) {
+            ::CloseHandle(g_initThread);
+            g_initThread = nullptr;
         }
         break;
 
     case DLL_PROCESS_DETACH:
-        // 安全卸载 Hook 并清理资源与 Marker
-        WgcHookManager::Instance().Remove();
-        SafetyGuard::Instance().Shutdown();
+        // 进程终止时 reserved != nullptr，不做复杂清理，交给 OS 回收。
+        if (reserved == nullptr) {
+            WgcHookManager::Instance().Remove();
+            SafetyGuard::Instance().Shutdown();
+        }
+        g_module = nullptr;
         break;
 
-    case DLL_THREAD_ATTACH:
-    case DLL_THREAD_DETACH:
+    default:
         break;
     }
+
     return TRUE;
 }
