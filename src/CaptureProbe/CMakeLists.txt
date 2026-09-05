@@ -17,7 +17,7 @@ target_link_libraries(probe_selftest PRIVATE captureprobe)
 #   cmake -DPROBE_VARIANT=2  ->  hdrfix_probe2.dll
 set(HDRFIX_PROBE_VARIANT "" CACHE STRING "probe dll 文件名后缀（避免旧实例文件锁）")
 add_library(hdrfix_probe SHARED probe_dll.cpp d3d11_observer.cpp iat_hook.cpp wgc_observer.cpp)
-target_link_libraries(hdrfix_probe PRIVATE captureprobe windowsapp)
+target_link_libraries(hdrfix_probe PRIVATE captureprobe hdrfix_integration hdrfix_diagnostics hdrfix_colordetect windowsapp)
 if(HDRFIX_PROBE_VARIANT)
     set_target_properties(hdrfix_probe PROPERTIES OUTPUT_NAME "hdrfix_probe${HDRFIX_PROBE_VARIANT}")
 endif()

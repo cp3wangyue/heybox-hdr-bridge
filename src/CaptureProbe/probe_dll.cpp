@@ -19,6 +19,8 @@
 #include "CaptureProbe/hdr_state.h"
 #include "CaptureProbe/probe_logger.h"
 #include "CaptureProbe/wgc_observer.h"
+#include "Integration/WgcHookManager.h"
+#include "Diagnostics/SafetyGuard.h"
 
 using namespace hdrfix;
 
@@ -54,7 +56,10 @@ static DWORD WINAPI Worker(LPVOID)
     const std::wstring logPath = ReadEnvStr(L"HDRFIX_PROBE_LOG", DefaultLogPath());
     const int maxSeconds = ReadEnvInt(L"HDRFIX_PROBE_MAXSEC", 2700); // 默认 45min：覆盖 P3 30 分钟稳定性窗口
 
+    SafetyGuard::Instance().Initialize();
+
     if (!ProbeLogger::Instance().Start(logPath, std::chrono::milliseconds(500))) {
+        SafetyGuard::Instance().Shutdown();
         return 1;
     }
     {
@@ -76,6 +81,14 @@ static DWORD WINAPI Worker(LPVOID)
                   st.bitsPerColor, st.sdrWhiteNits,
                   ColorSpaceName(st.colorSpace) ? ColorSpaceName(st.colorSpace) : "unknown");
         r.path = path;
+        r.force = true;
+        ProbeLogger::Instance().LogFrame(r);
+    }
+
+    // P5：WGC 帧池拦截接入（将客户端请求的 BGRA8 透明提升为 FP16 scRGB，并由 ToneMapCore 输出 Rec.709）
+    if (WgcHookManager::Instance().Install()) {
+        FrameLogRecord r;
+        r.path = "WgcHook:installed";
         r.force = true;
         ProbeLogger::Instance().LogFrame(r);
     }
@@ -133,8 +146,10 @@ static DWORD WINAPI Worker(LPVOID)
         }
     }
 
+    WgcHookManager::Instance().Remove();
     observer.Stop();
     wgc.Stop();
+    SafetyGuard::Instance().Shutdown();
     FrameLogRecord r;
     r.path = "ProbeStop";
     r.force = true;
