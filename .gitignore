@@ -1,16 +1,38 @@
-# 构建产物
-build*/
-out/
-.vs/
-ipch/
+# Build outputs
+/build*/
+/out/
+/.vs/
+**/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.slnx
 *.user
 *.aps
+*.pdb
+*.ilk
+*.exp
+*.lib
 
-# 运行日志（诊断输出不入库；docs/recon 下的证据日志除外）
+# Runtime / diagnostics
 /logs/
 *.log
-!docs/recon/**/*.log
-
-# Probe / 临时 dump
 *.dmp
-tests/GoldenFrames/tmp/
+
+# Local reconnaissance and generated evidence
+/docs/recon/
+/docs/test-reports/
+/tests/**/output/
+/tests/**/tmp/
+
+# IDE / editor
+.vscode/
+.idea/
+*.VC.db
+*.VC.opendb
+
+# Python helper artifacts
+__pycache__/
+*.pyc

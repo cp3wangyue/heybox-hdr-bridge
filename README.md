@@ -1,103 +1,178 @@
-# hdr-share-fix — 小黑盒 HDR 屏幕共享 SDR 色调映射补丁
+# HEYBOX HDR Bridge
 
-为小黑盒 Windows 客户端屏幕共享链路增加 HDR→SDR 色调映射能力：本机继续使用 HDR，远端观众获得正确的 SDR Rec.709 画面。完整方案见仓库外的工作区文档《小黑盒_HDR屏幕共享_SDR色调映射补丁_项目开发计划书_v1.0.docx》（纯文本摘录见 `docs/plan-v1.0-extracted.md`）。
+> 非官方的 Windows HDR → SDR 屏幕共享兼容层，面向小黑盒（HEYBOX）PC 客户端。
 
-## 核心原则（每个开发回合都要自检）
+HEYBOX HDR Bridge 用于解决 **Windows 开启 HDR 后，小黑盒屏幕共享在远端出现过亮、发白、高光裁切或颜色异常** 的问题。它不会关闭本机 HDR，而是在小黑盒的 Windows Graphics Capture（WGC）捕获链路中保留 HDR 动态范围，并在 GPU 上将画面映射为标准 SDR Rec.709 后交回原有编码流程。
 
-| 原则 | 执行要求 |
+> [!WARNING]
+> 这是一个**非官方、实验性**兼容项目，与小黑盒/HEYBOX 官方无隶属、合作或授权关系。项目会向小黑盒进程加载 DLL 并 Hook 本地 WGC 接口；客户端更新后兼容性可能变化，使用前请阅读“已知限制”。
+
+## 为什么需要它
+
+Windows HDR 桌面通常以 FP16 scRGB 参与合成。若屏幕共享程序仍请求 8-bit BGRA 捕获表面，HDR 高光会在进入后续编码链前就被压缩或裁切，之后再做普通 SDR 编码已经无法恢复正确亮度关系。
+
+本项目当前的处理路径是：
+
+```text
+HEYBOX 请求 WGC BGRA8 帧池
+        ↓
+拦截 Direct3D11CaptureFramePool 创建
+        ↓
+Windows HDR 开启时提升为 FP16 scRGB
+        ↓
+D3D11 GPU Tone Mapping
+        ↓
+Rec.709 / BGRA8 SDR
+        ↓
+代理帧返回给小黑盒原有编码链
+```
+
+HDR 关闭、格式未知或安全检查失败时，目标是直接走原生帧路径（Fail-open），避免因补丁异常导致黑屏。
+
+## 当前状态
+
+当前代码已经具备 WGC 帧池代理、scRGB → SDR GPU 色调映射、配置读取、旁路/熔断以及加载器等主要模块，但仍处于 **Experimental** 阶段，不建议把“在一台机器上验证通过”理解为对所有客户端版本、GPU 和 Windows 构建都已稳定支持。
+
+目前仓库中的兼容信息对应：
+
+| 项目 | 已验证环境 |
 | --- | --- |
-| 证据优先 | 关键结论必须有日志、调用栈、纹理描述、截图或录屏；不凭字符串猜架构 |
-| 最小侵入 | 只 Hook 单个稳定边界；不碰网络、音频、账号与安全机制 |
-| GPU 全程 | HDR→SDR 与 RGB→YUV 全部在 D3D11 GPU 上完成，禁止逐帧 GPU→CPU→GPU |
-| Fail-open | 任何异常回到小黑盒原始帧路径；插件故障不黑屏、不崩溃 |
-| 版本锁定 | 未知客户端版本不写入，只允许只读诊断 |
-| 可诊断 | 先做观察器，再做修改器 |
+| 小黑盒客户端 | HeyboxChat 1.56.0 |
+| RTC 模块 | VolcEngineRTC.dll 3.58.1.63260 |
+| 捕获路径 | Windows Graphics Capture / D3D11 |
+| HDR 输入 | FP16 scRGB |
+| SDR 输出 | Rec.709 / BGRA8 |
+| 10-bit PQ 输入 | 目前仅诊断，不主动转换 |
 
-**当前阶段红线：Gate P2 未通过前，不写 Tone Mapping、不写帧。**
+## 使用方式
 
-## 阶段路线与 Gate
+仓库目前保留 `dist/` 作为便携测试包。长期发布建议迁移到 GitHub Releases，避免把编译产物长期放在源码历史中。
 
-| 阶段 | 目标 | 通过标准（Gate） | 状态 |
-| --- | --- | --- | --- |
-| P0 | 复现与基线 | B0–B4 样本齐备，HDR Off 正常 / On 异常可复现，环境指纹记录 | ☑ |
-| P1 | 静态侦察 | 模块地图 + 2~5 条候选捕获→编码路径（含证据强度） | ☑ |
-| P2 | 动态追踪 | 帧路径五项：捕获 API / 纹理格式 / 转换节点 / 编码器输入 / HDR 信息丢失点 | ☑ |
-| P3 | 无损 Hook POC | 透传不改变画面；30 分钟稳定；可一键 Bypass | ☑ |
-| P4 | GPU Tone Mapping 核心 | 独立 Harness 输出正确 Rec.709；4K60 GPU 开销可接受；无 CPU Readback | ☑ |
-| P5 | 接入编码前链路 | 真实共享远端画面接近 B0/B2；连续切换 10 次无崩溃 | ☑ |
-| P6 | 自动检测与故障保护 | AutoDetect 判定顺序 + Kill switch + Fail-open + 版本锁 | ☑ |
-| P7 | 测试与稳定性 | 功能矩阵无阻断缺陷；2 小时稳定；性能达标 | ☑ |
-| P8 | 打包与维护 | 版本可识别、失败可回滚、可完整卸载 | ☑ |
+### 安装
 
-详细 DoD 与风险登记见计划书；每个回合的证据记录写在 `docs/test-reports/`。
-
-## 仓库结构（对应计划书 §13.1）
-
-```
-hdr-share-fix/
-├─ docs/                  侦察报告、测试报告、兼容性记录
-├─ src/
-│  ├─ Bootstrap/          加载器（仅本地加载与版本检查；不做持久化）
-│  ├─ Hook/               Hook 边界实现（Gate P2/P3 之后才动手）
-│  ├─ CaptureProbe/       只读探测：纹理描述、HDR 状态、低开销采样日志
-│  ├─ ColorDetect/        scRGB / PQ / SDR 识别与 AutoDetect 判定
-│  ├─ ToneMap/            ToneMapCore（Gate P2 之后才动手）
-│  ├─ ColorConvert/       Rec.709 RGB ↔ NV12 转换
-│  ├─ Integration/        帧替换与原编码链接回（Gate P3/P4 之后）
-│  └─ Diagnostics/        日志限流、崩溃标记、诊断叠加层
-├─ shaders/               tonemap_scrgb / tonemap_pq / rgb_to_nv12（P4 起实现）
-├─ tests/
-│  ├─ ToneMapHarness/     独立算法测试台（P4）
-│  ├─ GoldenFrames/       golden images 基准帧
-│  └─ Perf/               性能采样脚本与数据
-├─ tools/
-│  ├─ capture_format_spy/ 只读系统级格式探测（WGC + DXGI Duplication）
-│  ├─ env_fingerprint.ps1 P0 环境指纹采集
-│  ├─ hdr_state.ps1       每显示器 HDR/SDR-white 快速查询
-│  └─ module_diff.ps1     P1 进程模块清单快照与 diff
-└─ config/hdrfix.ini      配置样例（§10.2）
+```text
+dist/install.bat
 ```
 
-## 快速开始（P0/P1，不注入、不修改客户端）
+安装器会把必要文件复制到：
+
+```text
+%LOCALAPPDATA%\Qingfeng\HeyboxChat\plugins\hdrfix
+```
+
+并启动当前 Windows 会话中的后台守护进程。**当前代码中的开机自启动注册逻辑仍有待修正，重启 Windows 后不要默认认为守护已经自动恢复。**
+
+### 状态检查
 
 ```powershell
-# 0) 生成构建（VS 2026 BuildTools / MSVC x64）
-cmake --preset windows-msvc-x64
-cmake --build build/msvc-x64 --config Release
-
-# 1) P0 环境指纹：记录系统、GPU、驱动、HDR 状态、小黑盒版本与哈希
-powershell -File tools/env_fingerprint.ps1 -ClientPath "C:\Users\22983\AppData\Local\Qingfeng\HeyboxChat"
-# 输出写入 docs/recon/env-fingerprint-<时间戳>.md / .json
-
-# 2) P0 HDR 状态查询 / 开关（A/B 自动化；测试后记得恢复）
-build\msvc-x64\tools\hdr_ctl\Release\hdr_ctl.exe status
-build\msvc-x64\tools\hdr_ctl\Release\hdr_ctl.exe off   # 屏幕会闪一下
-build\msvc-x64\tools\hdr_ctl\Release\hdr_ctl.exe on
-
-# 3) 系统级捕获格式探测（只读，独立进程，不碰客户端）：
-#    HDR Off / On 各跑一次，确认捕获纹理格式与色彩空间（结果存 docs/recon/）
-build\msvc-x64\tools\capture_format_spy\Release\capture_format_spy.exe --backend both --duration 3
-
-# 4) P1 静态侦察：对客户端二进制做导入表/字符串检索
-python tools/pe_recon.py "C:\Users\22983\AppData\Local\Qingfeng\HeyboxChat" docs/recon/pe-recon.md
-
-# 5) P1 模块清单快照与 diff：共享前后各抓一次（支持 Electron 多进程）
-powershell -File tools/module_diff.ps1 -Snapshot -Tag idle    -ProcessName HeyboxChat
-#   （开始屏幕共享后）
-powershell -File tools/module_diff.ps1 -Snapshot -Tag sharing -ProcessName HeyboxChat
-powershell -File tools/module_diff.ps1 -Diff idle,sharing
+dist\hdrfix_loader.exe --status
 ```
 
-样本 B0–B4 的录制与保存要求见 `docs/p0-baseline-checklist.md`。
+### 手动注入
 
-## 分支与提交（§13.2）
+先正常启动小黑盒，再执行：
 
-- `main` 始终可构建、可旁路；试验性 Hook 不直接上 main
-- `recon/*` 只提交文档、脚本、日志工具；`feature/tonemap-*` 仅在 Gate P2 后建立；`feature/integration-*` 仅在 Gate P3/P4 后建立；`fix/compat-*` 对应具体客户端版本
-- 提交前缀：`recon:` / `probe:` / `tonemap:` / `integrate:` / `test:` / `compat:`；一次提交只解决一类问题
+```powershell
+dist\hdrfix_loader.exe --inject
+```
 
-## 许可与合规提醒（§2.2）
+### 卸载
 
-- 先确认小黑盒客户端条款允许的研究范围；不绕过登录、签名、授权、加密、反篡改、反作弊
-- OBS 代码为 GPL：只参考其**行为**与公开规范（Microsoft / ITU / SMPTE），独立实现；复用代码前单独评估许可证
-- 仅本地研究构建；公开发布前重新审查条款
+```text
+dist/uninstall.bat
+```
+
+卸载流程会发送旁路/停止信号并清理插件目录。
+
+## 配置
+
+默认配置位于 `config/hdrfix.ini`，发布包中也包含同名配置。
+
+```ini
+[General]
+Enable=true
+FailOpen=true
+Input=Auto
+Output=Rec709
+
+[HDR]
+ToneMapper=Auto
+SourcePeakNits=Auto
+SDRReferenceWhite=System
+Exposure=0.0
+HighlightRollOff=1.0
+
+[Compatibility]
+StrictVersionCheck=true
+AllowUnknownBuild=false
+```
+
+当前可用的 Tone Mapper 包括 `LumaHuePreserving`、`ACES`、`Hable`、`Reinhard` 和 `Clamp`。`Auto` 当前会回落到默认的亮度/色相保持路径。
+
+## 从源码构建
+
+### 环境
+
+- Windows 11
+- Visual Studio / MSVC x64
+- CMake 3.24+
+- Windows SDK
+
+### 构建
+
+```powershell
+cmake --preset windows-msvc-x64
+cmake --build --preset msvc-x64-release
+```
+
+生成物位于：
+
+```text
+build/msvc-x64/
+```
+
+仓库使用 CMake 作为唯一构建源；Visual Studio 的 `.vcxproj`、`.slnx`、`CMakeFiles/`、`cmake_install.cmake` 等均属于生成文件，不应提交到 Git。
+
+## 代码结构
+
+```text
+src/
+├─ Bootstrap/      DLL 入口与加载器
+├─ CaptureProbe/   WGC / D3D11 / HDR 状态探测
+├─ ColorDetect/    HDR / SDR 判定
+├─ Diagnostics/    配置与安全旁路
+├─ Hook/           本地 Hook 实现
+├─ Integration/    WGC 帧池代理与帧替换
+└─ ToneMap/        D3D11 色调映射核心
+
+shaders/           HLSL 参考实现
+tools/             捕获、HDR 状态与诊断工具
+tests/             Tone Mapping 独立测试台
+config/            默认配置
+dist/              当前便携测试包
+```
+
+## 已知限制
+
+- 当前“严格版本检查”并没有真正校验 `HeyboxChat.exe` / `VolcEngineRTC.dll` 的文件版本或哈希；`compat.json` 也尚未接入运行时白名单逻辑。
+- 当前 x64 inline hook 为自研轻量实现，尚未完整处理被搬移指令中的 RIP-relative 寻址和相对跳转，客户端/系统 DLL 更新后存在兼容风险。
+- DLL 初始化阶段仍有较多工作发生在 `DllMain` 中，应迁移到独立初始化线程以避免 Loader Lock 风险。
+- Tone Mapping 使用宿主 D3D11 immediate context，并会修改渲染管线状态；后续需要做完整状态保存/恢复或隔离上下文。
+- 目前主要验证的是 FP16 scRGB 路径，R10G10B10A2 / PQ 仍是诊断模式。
+- 当前没有 CI、自动化 Release、签名和跨版本回归矩阵。
+
+## 开发原则
+
+1. **Fail-open**：任何异常优先返回小黑盒原始帧。
+2. **GPU-only hot path**：逐帧路径避免 GPU → CPU → GPU readback。
+3. **最小 Hook 面**：只处理本地屏幕捕获/颜色转换，不碰账号、网络协议、登录、加密或服务端逻辑。
+4. **版本保守**：未知客户端版本默认应旁路，而不是强行介入。
+5. **可回滚**：安装、守护、注入和配置都必须能够完整停用与卸载。
+
+## 安全与兼容性说明
+
+DLL 注入和 API Hook 属于高权限本地运行时行为，部分安全软件可能产生告警。不要把本项目用于绕过登录、授权、签名、反作弊或其他安全机制；本项目的目标仅是修复本地屏幕共享的 HDR → SDR 颜色处理链路。
+
+## License
+
+仓库目前**尚未声明开源许可证**。在正式添加 `LICENSE` 前，公开可见源码并不等同于获得复制、修改、再发布许可；如计划开放贡献或分发二进制，请先选择并补充合适的许可证。
