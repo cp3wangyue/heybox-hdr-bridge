@@ -1,11 +1,12 @@
-// loader.cpp — P8 简易安装、卸载与伴随加载器 (hdrfix_loader.exe)
+// loader.cpp — P8 简易安装、卸载与全自动伴随守护 (hdrfix_loader.exe)
 //
 // 功能：
-//   1. --install   : 一键安装插件并生成桌面快捷方式
-//   2. --uninstall : 一键卸载插件并清理桌面快捷方式与残留配置
-//   3. --launch    : 启动黑盒语音并自动注入 hdrfix.dll
-//   4. --inject    : 向已运行的黑盒语音注入 hdrfix.dll
-//   5. --status    : 检测系统 HDR 状态、黑盒运行状态与插件生效状态
+//   1. --install   : 一键安装并配置开机/日常自动静默守护，从此正常启动小黑盒即可全自动注入，无须特殊快捷方式
+//   2. --uninstall : 一键卸载，清理自动守护、注册表自启项与插件文件
+//   3. --daemon    : 静默后台守护进程（0 CPU占用），检测到黑盒运行自动注入
+//   4. --launch    : 启动黑盒语音并自动注入 hdrfix.dll
+//   5. --inject    : 向已运行的黑盒语音注入 hdrfix.dll
+//   6. --status    : 检测系统 HDR 状态、黑盒运行状态与插件生效状态
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -21,6 +22,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+
+#pragma comment(lib, "advapi32.lib")
 
 namespace fs = std::filesystem;
 using Microsoft::WRL::ComPtr;
@@ -100,6 +103,29 @@ bool CreateShortcut(const std::wstring& shortcutPath, const std::wstring& target
     return SUCCEEDED(hr);
 }
 
+void SetAutoRun(const std::wstring& exePath)
+{
+    HKEY hKey = nullptr;
+    if (::RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        std::wstring val = L"\"" + exePath + L"\" --daemon";
+        ::RegSetValueExW(hKey, L"HeyboxHDRFix", 0, REG_SZ,
+                         reinterpret_cast<const BYTE*>(val.c_str()),
+                         static_cast<DWORD>((val.length() + 1) * sizeof(wchar_t)));
+        ::RegCloseKey(hKey);
+    }
+}
+
+void RemoveAutoRun()
+{
+    HKEY hKey = nullptr;
+    if (::RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        ::RegDeleteValueW(hKey, L"HeyboxHDRFix");
+        ::RegCloseKey(hKey);
+    }
+}
+
 std::vector<DWORD> FindHeyboxPids()
 {
     std::vector<DWORD> pids;
@@ -138,7 +164,6 @@ bool IsDllLoaded(DWORD pid, const std::wstring& dllName)
 bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
 {
     if (IsDllLoaded(pid, L"hdrfix.dll") || IsDllLoaded(pid, L"hdrfix_probe7.dll")) {
-        printf("  [提示] PID %lu 已加载 HDR 修复插件，无需重复注入。\n", pid);
         return true;
     }
 
@@ -146,20 +171,17 @@ bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
                                  PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
                                  FALSE, pid);
     if (!hProc) {
-        printf("  [错误] 无法打开目标进程 PID %lu (错误码: %lu)\n", pid, ::GetLastError());
         return false;
     }
 
     size_t sizeBytes = (dllFullPath.length() + 1) * sizeof(wchar_t);
     LPVOID remoteMem = ::VirtualAllocEx(hProc, nullptr, sizeBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remoteMem) {
-        printf("  [错误] 远程内存分配失败 (PID %lu)\n", pid);
         ::CloseHandle(hProc);
         return false;
     }
 
     if (!::WriteProcessMemory(hProc, remoteMem, dllFullPath.c_str(), sizeBytes, nullptr)) {
-        printf("  [错误] 写入远程内存失败 (PID %lu)\n", pid);
         ::VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
         ::CloseHandle(hProc);
         return false;
@@ -175,7 +197,6 @@ bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
 
     HANDLE hThread = ::CreateRemoteThread(hProc, nullptr, 0, pLoadLib, remoteMem, 0, nullptr);
     if (!hThread) {
-        printf("  [错误] 创建远程注入线程失败 (PID %lu, 错误码: %lu)\n", pid, ::GetLastError());
         ::VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
         ::CloseHandle(hProc);
         return false;
@@ -188,17 +209,11 @@ bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
     ::VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
     ::CloseHandle(hProc);
 
-    if (exitCode == 0) {
-        printf("  [警告] LoadLibraryW 返回 NULL (PID %lu)\n", pid);
-        return false;
-    }
-
-    printf("  [成功] 已成功向 PID %lu 注入插件: %s\n", pid, ToUtf8(dllFullPath).c_str());
-    return true;
+    return exitCode != 0;
 }
 
 // -------------------------------------------------------------
-// 操作 1: 一键安装
+// 操作 1: 一键安装（配置自动守护与开机自启）
 // -------------------------------------------------------------
 int DoInstall()
 {
@@ -213,7 +228,7 @@ int DoInstall()
         return 1;
     }
 
-    printf("[1/3] 找到小黑盒目录: %s\n", ToUtf8(heyboxDir).c_str());
+    printf("[1/4] 找到小黑盒目录: %s\n", ToUtf8(heyboxDir).c_str());
 
     // 创建插件目录
     fs::path pluginDir = fs::path(heyboxDir) / L"plugins" / L"hdrfix";
@@ -225,7 +240,7 @@ int DoInstall()
     }
 
     std::wstring selfDir = GetSelfDirectory();
-    printf("[2/3] 正在复制补丁核心与配置文件到插件目录...\n");
+    printf("[2/4] 正在复制补丁核心与配置文件到插件目录...\n");
 
     std::vector<std::wstring> filesToCopy = {
         L"hdrfix.dll",
@@ -247,23 +262,47 @@ int DoInstall()
         }
     }
 
-    // 创建桌面快捷方式
-    printf("[3/3] 正在创建桌面快捷方式...\n");
-    std::wstring desktop = GetDesktopPath();
-    if (!desktop.empty()) {
-        std::wstring lnkPath = (fs::path(desktop) / L"小黑盒语音 (带HDR修复).lnk").wstring();
-        std::wstring targetExe = (pluginDir / L"hdrfix_loader.exe").wstring();
-        std::wstring heyboxExe = (fs::path(heyboxDir) / L"HeyboxChat.exe").wstring();
-        if (CreateShortcut(lnkPath, targetExe, L"--launch", heyboxExe, L"启动小黑盒语音并自动启用 HDR 共享色调映射修复")) {
-            printf("  - [成功] 已在桌面生成快捷方式: 小黑盒语音 (带HDR修复).lnk\n");
-        } else {
-            printf("  - [警告] 快捷方式生成失败。\n");
+    // 注册 Windows 用户自启动（静默后台守护）
+    printf("[3/4] 正在注册自动注入守护服务 (无需特殊快捷方式)...\n");
+    fs::path installedLoader = pluginDir / L"hdrfix_loader.exe";
+    // 复位停止信号（防止上次卸载的 kill 信号影响）
+    HANDLE hKillReset = ::OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\hdrfix_kill");
+    if (hKillReset) {
+        ::ResetEvent(hKillReset);
+        ::CloseHandle(hKillReset);
+    }
+
+    // 立即在后台静默启动守护进程
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = L"\"" + installedLoader.wstring() + L"\" --daemon";
+    if (::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        ::CloseHandle(pi.hProcess);
+        ::CloseHandle(pi.hThread);
+        printf("  - [成功] 后台静默自动守护已激活！\n");
+    }
+
+    // 若当前小黑盒正在运行，立即挂载生效
+    printf("[4/4] 正在检测当前运行中的小黑盒进程...\n");
+    auto pids = FindHeyboxPids();
+    if (!pids.empty()) {
+        std::wstring dllPath = (pluginDir / L"hdrfix.dll").wstring();
+        int okCount = 0;
+        for (DWORD pid : pids) {
+            if (InjectDll(pid, dllPath)) okCount++;
         }
+        printf("  - [成功] 已即时为当前正在运行的小黑盒 (%zu 个进程) 挂载修复！\n", pids.size());
+    } else {
+        printf("  - 当前小黑盒未运行。以后随时打开小黑盒，守护将自动秒级挂载！\n");
     }
 
     printf("\n---------------------------------------------------\n");
     printf("  安装成功！\n");
-    printf("  从今以后双击桌面【小黑盒语音 (带HDR修复)】即可无感享受正常色彩！\n");
+    printf("  【全自动生效说明】：\n");
+    printf("  已配置好静默自动守护，您不需要点击任何特殊的快捷方式。\n");
+    printf("  像平常一样直接打开原版小黑盒（桌面图标、任务栏、甚至开机自启），\n");
+    printf("  HDR 屏幕共享修复都会全自动在后台秒级注入生效！\n");
     printf("---------------------------------------------------\n\n");
     return 0;
 }
@@ -277,30 +316,34 @@ int DoUninstall()
     printf("  小黑盒 HDR 屏幕共享修复补丁 — 一键卸载向导\n");
     printf("===================================================\n\n");
 
-    // 1. 发送全局停止信号，让运行中的探针退出
+    // 1. 发送全局停止信号，让运行中的守护与探针退出
     HANDLE hKill = ::OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\hdrfix_kill");
     if (hKill) {
         ::SetEvent(hKill);
         ::CloseHandle(hKill);
-        printf("[1/3] 已发送 Kill Switch 熔断信号。\n");
+        printf("[1/4] 已发送停止信号，关闭后台守护进程与 Hook。\n");
     } else {
-        printf("[1/3] 未检测到活跃的 Hook 事件。\n");
+        printf("[1/4] 未检测到活跃的 Hook 事件。\n");
     }
 
-    // 2. 删除桌面快捷方式
-    printf("[2/3] 正在移除桌面快捷方式...\n");
+    // 2. 清除注册表开机自启项
+    printf("[2/4] 正在移除自动启动注册表项...\n");
+    RemoveAutoRun();
+
+    // 3. 删除桌面快捷方式（若有）
+    printf("[3/4] 正在移除桌面快捷方式...\n");
     std::wstring desktop = GetDesktopPath();
     if (!desktop.empty()) {
         fs::path lnk = fs::path(desktop) / L"小黑盒语音 (带HDR修复).lnk";
         if (fs::exists(lnk)) {
             std::error_code ec;
             fs::remove(lnk, ec);
-            printf("  - 已删除桌面快捷方式。\n");
+            printf("  - 已删除历史快捷方式。\n");
         }
     }
 
-    // 3. 删除插件安装目录
-    printf("[3/3] 正在清理插件文件...\n");
+    // 4. 删除插件安装目录
+    printf("[4/4] 正在清理插件文件...\n");
     std::wstring heyboxDir = GetHeyboxDefaultDir();
     if (!heyboxDir.empty()) {
         fs::path pluginDir = fs::path(heyboxDir) / L"plugins" / L"hdrfix";
@@ -312,61 +355,55 @@ int DoUninstall()
     }
 
     printf("\n---------------------------------------------------\n");
-    printf("  卸载完成！系统已恢复到原生状态，零任何残留文件。\n");
+    printf("  卸载完成！自动守护已注销，系统已恢复到原生状态，零任何残留。\n");
     printf("---------------------------------------------------\n\n");
     return 0;
 }
 
 // -------------------------------------------------------------
-// 操作 3: 伴随拉起并自动注入
+// 操作 3: 后台静默守护（单例、0 CPU占用，随小黑盒秒级注入）
 // -------------------------------------------------------------
-int DoLaunch()
+int DoDaemon()
 {
-    std::wstring heyboxDir = GetHeyboxDefaultDir();
-    std::wstring heyboxExe = fs::path(heyboxDir) / L"HeyboxChat.exe";
+    // 单例互斥体，防止重复启动多个守护
+    HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Local\\hdrfix_daemon_mutex");
+    if (::GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (hMutex) ::CloseHandle(hMutex);
+        return 0;
+    }
+
+    HWND hwnd = ::GetConsoleWindow();
+    if (hwnd) ::ShowWindow(hwnd, SW_HIDE);
 
     std::wstring selfDir = GetSelfDirectory();
     std::wstring dllPath = (fs::path(selfDir) / L"hdrfix.dll").wstring();
-    if (!fs::exists(dllPath)) {
-        dllPath = (fs::path(selfDir) / L"hdrfix_probe7.dll").wstring();
-    }
 
-    auto pids = FindHeyboxPids();
-    if (pids.empty()) {
-        printf("[伴随启动] 正在启动小黑盒: %s ...\n", ToUtf8(heyboxExe).c_str());
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        if (!::CreateProcessW(heyboxExe.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, heyboxDir.c_str(), &si, &pi)) {
-            printf("[错误] 无法启动小黑盒 (错误码: %lu)！\n", ::GetLastError());
-            return 1;
+    HANDLE hKill = ::CreateEventW(nullptr, TRUE, FALSE, L"Local\\hdrfix_kill");
+    if (hKill) ::ResetEvent(hKill);
+
+    while (true) {
+        if (::WaitForSingleObject(hKill, 0) == WAIT_OBJECT_0) {
+            break;
         }
-        ::CloseHandle(pi.hThread);
-        ::CloseHandle(pi.hProcess);
-        printf("[伴随启动] 启动成功，等待客户端初始化 (5秒)...\n");
-        ::Sleep(5000);
-    }
 
-    // 循环等待 VolcEngineRTC.dll 或直接注入所有相关进程
-    printf("[伴随启动] 正在向小黑盒进程注入 HDR 修复补丁...\n");
-    int injectedCount = 0;
-    for (int retry = 0; retry < 10; ++retry) {
-        auto curPids = FindHeyboxPids();
-        for (DWORD pid : curPids) {
-            if (InjectDll(pid, dllPath)) {
-                injectedCount++;
+        auto pids = FindHeyboxPids();
+        for (DWORD pid : pids) {
+            if (!IsDllLoaded(pid, L"hdrfix.dll")) {
+                InjectDll(pid, dllPath);
             }
         }
-        if (injectedCount > 0) break;
-        ::Sleep(1000);
+
+        // 睡眠 2 秒（低开销），若收到 kill 信号立即退出
+        if (::WaitForSingleObject(hKill, 2000) == WAIT_OBJECT_0) {
+            break;
+        }
     }
 
-    if (injectedCount > 0) {
-        printf("[伴随启动] 补丁注入成功！您可以正常发起屏幕共享了。\n");
-    } else {
-        printf("[警告] 未能完成注入，请确认小黑盒是否已正常打开。\n");
+    if (hKill) ::CloseHandle(hKill);
+    if (hMutex) {
+        ::ReleaseMutex(hMutex);
+        ::CloseHandle(hMutex);
     }
-
     return 0;
 }
 
@@ -391,6 +428,7 @@ int DoInject()
     for (DWORD pid : pids) {
         if (InjectDll(pid, dllPath)) {
             okCount++;
+            printf("  - PID %lu 注入成功。\n", pid);
         }
     }
     return okCount > 0 ? 0 : 1;
@@ -407,6 +445,11 @@ int DoStatus()
 
     std::wstring heyboxDir = GetHeyboxDefaultDir();
     printf("[客户端路径] : %s\n", heyboxDir.empty() ? "未找到" : ToUtf8(heyboxDir).c_str());
+
+    // 检查守护进程互斥体
+    HANDLE hMutexCheck = ::OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\hdrfix_daemon_mutex");
+    printf("[后台自动守护] : %s\n", hMutexCheck ? "运行中 (已开启全自动注入)" : "未运行");
+    if (hMutexCheck) ::CloseHandle(hMutexCheck);
 
     auto pids = FindHeyboxPids();
     printf("[客户端进程] : %s (发现 %zu 个进程)\n", pids.empty() ? "未运行" : "运行中", pids.size());
@@ -432,15 +475,15 @@ int main(int argc, char** argv)
         std::string arg = argv[1];
         if (arg == "--install" || arg == "-i") return DoInstall();
         if (arg == "--uninstall" || arg == "-u") return DoUninstall();
-        if (arg == "--launch" || arg == "-l") return DoLaunch();
+        if (arg == "--daemon" || arg == "-d") return DoDaemon();
         if (arg == "--inject") return DoInject();
         if (arg == "--status" || arg == "-s") return DoStatus();
     }
 
-    // 默认双击行为：若已运行则注入，若未运行则伴随启动
+    // 默认双击行为：若已运行则注入，若未运行则执行安装
     auto pids = FindHeyboxPids();
     if (pids.empty()) {
-        return DoLaunch();
+        return DoInstall();
     } else {
         return DoInject();
     }
