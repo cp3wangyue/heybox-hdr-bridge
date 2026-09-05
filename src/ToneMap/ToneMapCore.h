@@ -1,0 +1,89 @@
+#pragma once
+// ToneMapCore.h — P4 GPU Tone Mapping 核心模块（计划书 §8）
+//
+// 负责在 D3D11 GPU 端将 FP16 scRGB 输入转换为 Rec.709 SDR 输出。
+// 全程 GPU 处理，无 CPU Readback，支持参数动态注入。
+
+#include <d3d11.h>
+#include <wrl/client.h>
+#include <cstdint>
+#include <string>
+
+namespace hdrfix {
+
+enum class ToneMapperType : uint32_t {
+    Clamp = 0,             // 基线对照组（模拟无映射直接裁切）
+    ExtendedReinhard = 1,  // 带峰值白点控制的扩展 Reinhard
+    Hable = 2,             // Filmic Hable / Uncharted 2 曲线
+    ACES = 3,              // 电影级 ACES Fitted
+    LumaHuePreserving = 4  // 基于亮度的色度保持滚降（Alpha 推荐默认）
+};
+
+enum class OetfType : uint32_t {
+    Rec709 = 0, // ITU-R BT.709 OETF（广播/共享视频流标准）
+    sRGB = 1,   // 标准 sRGB 转换曲线
+    Linear = 2  // 保持线性（调试用途）
+};
+
+// 与 HLSL cbuffer ToneMapConstants 内存对齐一致 (16 bytes 边界)
+struct ToneMapParams {
+    float sdrWhiteNits = 280.0f;       // 系统 SDR 参考白（系统读取或实测值，如 280 nits）
+    float sourcePeakNits = 1000.0f;    // 源高光峰值（nits，如 1000 或 1500）
+    float exposure = 0.0f;             // 曝光补偿 (EV)
+    uint32_t toneMapper = static_cast<uint32_t>(ToneMapperType::LumaHuePreserving);
+    float highlightRollOff = 1.0f;     // 高光滚降调节系数
+    float sdrTargetNits = 80.0f;       // 目标 SDR 白（标称 80 nits）
+    uint32_t oetfType = static_cast<uint32_t>(OetfType::Rec709);
+    float pad = 0.0f;
+};
+
+class ToneMapCore {
+public:
+    ToneMapCore() = default;
+    ~ToneMapCore() = default;
+
+    // 禁止拷贝，允许移动
+    ToneMapCore(const ToneMapCore&) = delete;
+    ToneMapCore& operator=(const ToneMapCore&) = delete;
+    ToneMapCore(ToneMapCore&&) noexcept = default;
+    ToneMapCore& operator=(ToneMapCore&&) noexcept = default;
+
+    // 初始化 Shader、Sampler、ConstantBuffer 等 GPU 常驻资源
+    bool Initialize(ID3D11Device* device, const std::wstring& shaderPath = L"shaders/tonemap_scrgb.hlsl");
+
+    // 更新色调映射参数
+    void SetParams(const ToneMapParams& params);
+    const ToneMapParams& GetParams() const { return m_params; }
+
+    // 执行单次色调映射 Pass（全屏三角形绘制）
+    bool Execute(ID3D11DeviceContext* context,
+                 ID3D11ShaderResourceView* inputSRV,
+                 ID3D11RenderTargetView* outputRTV,
+                 UINT width,
+                 UINT height);
+
+    // 针对 Texture2D 的便捷执行封装（若传入已创建好的纹理，内部维护兼容的 SRV/RTV 缓存）
+    bool Execute(ID3D11DeviceContext* context,
+                 ID3D11Texture2D* inputTexture,
+                 ID3D11Texture2D* outputTexture);
+
+    bool IsInitialized() const { return m_initialized; }
+
+private:
+    bool CreatePipelineStates(ID3D11Device* device);
+    bool UpdateConstantBuffer(ID3D11DeviceContext* context);
+
+    Microsoft::WRL::ComPtr<ID3D11Device> m_device;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> m_vs;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_ps;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_cbuffer;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> m_sampler;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_rasterizerState;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_blendState;
+
+    ToneMapParams m_params{};
+    bool m_paramsDirty = true;
+    bool m_initialized = false;
+};
+
+} // namespace hdrfix
