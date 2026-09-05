@@ -52,7 +52,7 @@ static DWORD WINAPI Worker(LPVOID)
 {
     const std::wstring module = ReadEnvStr(L"HDRFIX_PROBE_MODULE", L"VolcEngineRTC.dll");
     const std::wstring logPath = ReadEnvStr(L"HDRFIX_PROBE_LOG", DefaultLogPath());
-    const int maxSeconds = ReadEnvInt(L"HDRFIX_PROBE_MAXSEC", 900);
+    const int maxSeconds = ReadEnvInt(L"HDRFIX_PROBE_MAXSEC", 2700); // 默认 45min：覆盖 P3 30 分钟稳定性窗口
 
     if (!ProbeLogger::Instance().Start(logPath, std::chrono::milliseconds(500))) {
         return 1;
