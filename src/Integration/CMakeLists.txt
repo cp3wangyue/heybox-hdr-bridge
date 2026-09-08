@@ -1,4 +1,4 @@
-# Integration 库：P5 帧替换与编码前链路接入（计划书 §9）
+# Integration 库：帧替换与编码前链路接入
 add_library(hdrfix_integration STATIC
     FramePoolProxy.cpp
     WgcHookManager.cpp

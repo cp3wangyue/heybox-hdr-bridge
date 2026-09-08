@@ -1,5 +1,5 @@
 #pragma once
-// Diagnostics/ConfigManager.h — 配置文件读取与管理（计划书 §10.2）
+// Diagnostics/ConfigManager.h — 配置文件读取与管理
 //
 // 负责读取并解析 config/hdrfix.ini，提供类型安全的运行期配置访问与默认值保证。
 
@@ -11,13 +11,13 @@ struct GeneralConfig {
     bool enable = true;
     bool failOpen = true;
     std::string input = "Auto";
-    std::string output = "Rec709";
+    std::string output = "sRGB";
     bool debugOverlay = false;
     std::string logLevel = "info";
 };
 
 struct HdrConfig {
-    std::string toneMapper = "Auto"; // Auto, Clamp, Reinhard, Hable, ACES, LumaHuePreserve
+    std::string toneMapper = "Auto"; // Auto, BT2390, OBSReinhard, Reinhard, Hable, ACES, LumaHuePreserve, Clamp
     float sourcePeakNits = 0.0f;     // <= 0 表示 Auto
     float sdrReferenceWhite = 0.0f;  // <= 0 表示 System
     float exposure = 0.0f;
@@ -25,8 +25,9 @@ struct HdrConfig {
 };
 
 struct CompatibilityConfig {
-    bool strictVersionCheck = true;
-    bool allowUnknownBuild = false;
+    bool strictVersionCheck = false;
+    bool allowUntestedCompatible = true;
+    bool allowUnknownBuild = true;
 };
 
 struct AppConfig {

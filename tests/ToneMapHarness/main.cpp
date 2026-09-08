@@ -1,12 +1,12 @@
-// ToneMapHarness — P4 独立算法测试台与性能基准（计划书 §8）
+// ToneMapHarness — FP16 scRGB -> Rec.709/sRGB GPU 色调映射算法测试台与性能基准
 //
 // 目标：
-//   1. 检验 FP16 scRGB → Rec.709 SDR 色调映射着色器与 ToneMapCore；
+//   1. 检验 FP16 scRGB → Rec.709/sRGB SDR 色调映射着色器与 ToneMapCore；
 //   2. 结合系统实际查询到的 SDR 参考白（如 280 nits）动态配置映射参数；
-//   3. 在 5 组针对性 HDR 测试图（灰阶阶梯、彩色高光、SDR UI+高光、暗场、肤色）上执行 A/B 验证；
+//   3. 在 5 组针对性 HDR 测试图（灰阶阶梯、彩色高光、SDR UI+高光、暗场、肤色）上执行对比验证；
 //   4. 测量 3840x2160 (4K60) 全屏渲染的纯 GPU 执行时间（D3D11 Timestamp Query），
 //      验证无 CPU Readback、GPU 开销远低于 2% 预算；
-//   5. 导出抽样 BMP 图像供效果对比与归档。
+//   5. 支持通过 --dump-frames 导出抽样 BMP 图像供效果对比。
 
 #include "CaptureProbe/hdr_state.h"
 #include "ToneMap/ToneMapCore.h"
@@ -145,10 +145,17 @@ std::vector<uint8_t> ReadbackTexturePixels(ID3D11Device* device, ID3D11DeviceCon
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    bool dumpFrames = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--dump-frames") {
+            dumpFrames = true;
+        }
+    }
+
     printf("=================================================================\n");
-    printf("  ToneMapHarness — P4 FP16 scRGB -> Rec.709 GPU Tone Mapping\n");
+    printf("  ToneMapHarness — FP16 scRGB -> Rec.709/sRGB GPU Tone Mapping\n");
     printf("=================================================================\n\n");
 
     // 1. 初始化 D3D11 硬件设备
@@ -325,10 +332,16 @@ int main()
         { hdrfix::ToneMapperType::ExtendedReinhard, "Extended Reinhard" },
         { hdrfix::ToneMapperType::Hable, "Hable (Filmic Uncharted2)" },
         { hdrfix::ToneMapperType::ACES, "ACES Fitted" },
-        { hdrfix::ToneMapperType::LumaHuePreserving, "Luma-HuePreserving (推荐)" }
+        { hdrfix::ToneMapperType::LumaHuePreserving, "Luma-HuePreserving" },
+        { hdrfix::ToneMapperType::OBSReinhard, "OBS Reinhard (Rec.2020)" },
+        { hdrfix::ToneMapperType::BT2390, "ITU-R BT.2390 (OBS对齐/推荐)" }
     };
 
-    CreateDirectoryW(L"docs/test-reports/p4_frames", nullptr);
+    if (dumpFrames) {
+        CreateDirectoryW(L"docs", nullptr);
+        CreateDirectoryW(L"docs/test-reports", nullptr);
+        CreateDirectoryW(L"docs/test-reports/p4_frames", nullptr);
+    }
 
     for (auto& m : modes) {
         hdrfix::ToneMapParams params{};
@@ -337,7 +350,7 @@ int main()
         params.exposure = 0.0f;
         params.toneMapper = static_cast<uint32_t>(m.type);
         params.highlightRollOff = 1.0f;
-        params.oetfType = static_cast<uint32_t>(hdrfix::OetfType::Rec709);
+        params.oetfType = static_cast<uint32_t>(hdrfix::OetfType::sRGB);
         toneMapper.SetParams(params);
 
         toneMapper.Execute(context.Get(), srvRamp.Get(), dstRTV.Get(), testW, testH);
@@ -375,11 +388,15 @@ int main()
                m.whitePointOutput,
                m.isMonotonic ? "YES (平滑单调)" : "NO (失真)");
 
-        // 保存抽样 BMP (Clamp 与推荐模式各存一份)
-        if (m.type == hdrfix::ToneMapperType::Clamp) {
-            SaveToBMP(L"docs/test-reports/p4_frames/ramp_clamp.bmp", testW, testH, pixels.data());
-        } else if (m.type == hdrfix::ToneMapperType::LumaHuePreserving) {
-            SaveToBMP(L"docs/test-reports/p4_frames/ramp_luma_hue_preserve.bmp", testW, testH, pixels.data());
+        // 仅在指定 --dump-frames 时保存抽样 BMP
+        if (dumpFrames) {
+            if (m.type == hdrfix::ToneMapperType::Clamp) {
+                SaveToBMP(L"docs/test-reports/p4_frames/ramp_clamp.bmp", testW, testH, pixels.data());
+            } else if (m.type == hdrfix::ToneMapperType::LumaHuePreserving) {
+                SaveToBMP(L"docs/test-reports/p4_frames/ramp_luma_hue_preserve.bmp", testW, testH, pixels.data());
+            } else if (m.type == hdrfix::ToneMapperType::BT2390) {
+                SaveToBMP(L"docs/test-reports/p4_frames/ramp_bt2390.bmp", testW, testH, pixels.data());
+            }
         }
     }
 
@@ -388,14 +405,14 @@ int main()
 
     // 验证 2: 彩色高光色相保持验证
     printf("-----------------------------------------------------------------\n");
-    printf("  [算法验证 2: 彩色高光 (Pure R, G, B HDR) 色相保持检验]\n");
+    printf("  [算法验证 2: 彩色高光 (Pure R, G, B HDR) 色相保持检验 (BT.2390 + sRGB)]\n");
     printf("-----------------------------------------------------------------\n");
     {
         hdrfix::ToneMapParams params{};
         params.sdrWhiteNits = detectedSdrWhiteNits;
         params.sourcePeakNits = 1200.0f;
-        params.toneMapper = static_cast<uint32_t>(hdrfix::ToneMapperType::LumaHuePreserving);
-        params.oetfType = static_cast<uint32_t>(hdrfix::OetfType::Rec709);
+        params.toneMapper = static_cast<uint32_t>(hdrfix::ToneMapperType::BT2390);
+        params.oetfType = static_cast<uint32_t>(hdrfix::OetfType::sRGB);
         toneMapper.SetParams(params);
 
         toneMapper.Execute(context.Get(), srvColor.Get(), dstRTV.Get(), testW, testH);
@@ -412,32 +429,40 @@ int main()
         } else {
             printf("  -> [WARN] 高光出现混色。\n");
         }
-        SaveToBMP(L"docs/test-reports/p4_frames/color_highlights_luma.bmp", testW, testH, pixels.data());
+        if (dumpFrames) {
+            SaveToBMP(L"docs/test-reports/p4_frames/color_highlights_bt2390.bmp", testW, testH, pixels.data());
+        }
     }
 
     // 验证 3: SDR UI + HDR 高光同屏比对
     printf("\n-----------------------------------------------------------------\n");
-    printf("  [算法验证 3: SDR UI (280 nits) + HDR 高光 (1500 nits) 同屏比对]\n");
+    printf("  [算法验证 3: SDR UI (280 nits) + HDR 高光 (1500 nits) 同屏比对 (BT.2390 + sRGB)]\n");
     printf("-----------------------------------------------------------------\n");
     {
         // 1) 测 Clamp
         hdrfix::ToneMapParams paramsClamp{};
         paramsClamp.sdrWhiteNits = detectedSdrWhiteNits;
         paramsClamp.toneMapper = static_cast<uint32_t>(hdrfix::ToneMapperType::Clamp);
+        paramsClamp.oetfType = static_cast<uint32_t>(hdrfix::OetfType::sRGB);
         toneMapper.SetParams(paramsClamp);
         toneMapper.Execute(context.Get(), srvSdrHdr.Get(), dstRTV.Get(), testW, testH);
         auto pixelsClamp = ReadbackTexturePixels(device.Get(), context.Get(), dstTex.Get(), testW, testH);
-        SaveToBMP(L"docs/test-reports/p4_frames/sdr_ui_clamp.bmp", testW, testH, pixelsClamp.data());
+        if (dumpFrames) {
+            SaveToBMP(L"docs/test-reports/p4_frames/sdr_ui_clamp.bmp", testW, testH, pixelsClamp.data());
+        }
 
-        // 2) 测 ToneMap
+        // 2) 测 BT.2390 ToneMap
         hdrfix::ToneMapParams paramsTM{};
         paramsTM.sdrWhiteNits = detectedSdrWhiteNits;
         paramsTM.sourcePeakNits = 1500.0f;
-        paramsTM.toneMapper = static_cast<uint32_t>(hdrfix::ToneMapperType::LumaHuePreserving);
+        paramsTM.toneMapper = static_cast<uint32_t>(hdrfix::ToneMapperType::BT2390);
+        paramsTM.oetfType = static_cast<uint32_t>(hdrfix::OetfType::sRGB);
         toneMapper.SetParams(paramsTM);
         toneMapper.Execute(context.Get(), srvSdrHdr.Get(), dstRTV.Get(), testW, testH);
         auto pixelsTM = ReadbackTexturePixels(device.Get(), context.Get(), dstTex.Get(), testW, testH);
-        SaveToBMP(L"docs/test-reports/p4_frames/sdr_ui_tonemap.bmp", testW, testH, pixelsTM.data());
+        if (dumpFrames) {
+            SaveToBMP(L"docs/test-reports/p4_frames/sdr_ui_tonemap_bt2390.bmp", testW, testH, pixelsTM.data());
+        }
 
         // 读取左侧 UI 白色按钮与右侧 HDR 高光中心值
         UINT uiIdx = (static_cast<UINT>(testH * 0.5f) * testW + static_cast<UINT>(testW * 0.25f)) * 4;
@@ -450,9 +475,127 @@ int main()
         printf("  -> [PASS] 同屏 UI 亮度自然，HDR 高光不过曝。\n");
     }
 
+    // 5. 验证 D3D11 Pipeline State 隔离与状态恢复
+    printf("\n-----------------------------------------------------------------\n");
+    printf("  [算法验证 4: D3D11 Pipeline State 隔离与恢复检验]\n");
+    printf("-----------------------------------------------------------------\n");
+    {
+        // 构造宿主特定管线状态（模拟 RTC 屏幕捕获与编码前端的上下文状态）
+        D3D11_VIEWPORT hostVp{};
+        hostVp.TopLeftX = 12.0f;
+        hostVp.TopLeftY = 34.0f;
+        hostVp.Width = 640.0f;
+        hostVp.Height = 360.0f;
+        hostVp.MinDepth = 0.1f;
+        hostVp.MaxDepth = 0.9f;
+        context->RSSetViewports(1, &hostVp);
+
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP);
+
+        // 自定义采样器
+        D3D11_SAMPLER_DESC sampDesc{};
+        sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+        ComPtr<ID3D11SamplerState> hostSampler;
+        device->CreateSamplerState(&sampDesc, hostSampler.GetAddressOf());
+        ID3D11SamplerState* samps[] = { hostSampler.Get() };
+        context->PSSetSamplers(0, 1, samps);
+
+        // 自定义混合状态
+        D3D11_BLEND_DESC blendDesc{};
+        blendDesc.RenderTarget[0].BlendEnable = TRUE;
+        blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+        blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        ComPtr<ID3D11BlendState> hostBlend;
+        device->CreateBlendState(&blendDesc, hostBlend.GetAddressOf());
+        FLOAT hostBlendFactor[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+        context->OMSetBlendState(hostBlend.Get(), hostBlendFactor, 0xAA55AA55);
+
+        // 宿主自定义 RTV
+        ComPtr<ID3D11Texture2D> hostTex;
+        ComPtr<ID3D11ShaderResourceView> hostSrv;
+        ComPtr<ID3D11RenderTargetView> hostRtv;
+        CreateTexturePair(device.Get(), 640, 360, DXGI_FORMAT_R8G8B8A8_UNORM,
+                          D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                          hostTex, hostSrv, hostRtv);
+        ID3D11RenderTargetView* hostRtvs[] = { hostRtv.Get() };
+        context->OMSetRenderTargets(1, hostRtvs, nullptr);
+
+        // 执行色调映射 Pass（内部由 D3D11StateGuard 自动接管隔离）
+        bool execOk = toneMapper.Execute(context.Get(), srvSdrHdr.Get(), dstRTV.Get(), testW, testH);
+        if (!execOk) {
+            printf("  [FAIL] Execute 失败！\n");
+        }
+
+        // 验证执行完毕后宿主状态是否 100% 精确复原
+        bool stateMatches = true;
+
+        // 1) 验证 Viewport
+        UINT numVp = 1;
+        D3D11_VIEWPORT checkVp{};
+        context->RSGetViewports(&numVp, &checkVp);
+        if (numVp != 1 || checkVp.TopLeftX != hostVp.TopLeftX || checkVp.Width != hostVp.Width) {
+            printf("  [FAIL] Viewport 未恢复: got TopLeftX=%.1f, Width=%.1f\n", checkVp.TopLeftX, checkVp.Width);
+            stateMatches = false;
+        }
+
+        // 2) 验证 Topology
+        D3D11_PRIMITIVE_TOPOLOGY checkTopo = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+        context->IAGetPrimitiveTopology(&checkTopo);
+        if (checkTopo != D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP) {
+            printf("  [FAIL] Topology 未恢复: got %d (expected %d)\n", (int)checkTopo, (int)D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP);
+            stateMatches = false;
+        }
+
+        // 3) 验证 Sampler
+        ComPtr<ID3D11SamplerState> checkSampler;
+        context->PSGetSamplers(0, 1, checkSampler.GetAddressOf());
+        if (checkSampler.Get() != hostSampler.Get()) {
+            printf("  [FAIL] Sampler 未恢复！\n");
+            stateMatches = false;
+        }
+
+        // 4) 验证 BlendState 与 BlendFactor
+        ComPtr<ID3D11BlendState> checkBlend;
+        FLOAT checkBf[4]{};
+        UINT checkMask = 0;
+        context->OMGetBlendState(checkBlend.GetAddressOf(), checkBf, &checkMask);
+        if (checkBlend.Get() != hostBlend.Get() || checkMask != 0xAA55AA55 ||
+            checkBf[0] != hostBlendFactor[0] || checkBf[2] != hostBlendFactor[2]) {
+            printf("  [FAIL] BlendState 未恢复！\n");
+            stateMatches = false;
+        }
+
+        // 5) 验证 RTV
+        ComPtr<ID3D11RenderTargetView> checkRtv;
+        context->OMGetRenderTargets(1, checkRtv.GetAddressOf(), nullptr);
+        if (checkRtv.Get() != hostRtv.Get()) {
+            printf("  [FAIL] RenderTargetView 未恢复！\n");
+            stateMatches = false;
+        }
+
+        if (stateMatches) {
+            printf("  Viewport: [RESTORED] (TopLeft=%.1f,%.1f, Size=%.0fx%.0f)\n",
+                   checkVp.TopLeftX, checkVp.TopLeftY, checkVp.Width, checkVp.Height);
+            printf("  Topology: [RESTORED] (D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP)\n");
+            printf("  Sampler:  [RESTORED] (Host Point Sampler)\n");
+            printf("  Blend:    [RESTORED] (Host BlendState & Factors)\n");
+            printf("  RTV/OM:   [RESTORED] (Host RenderTarget & OM Bindings)\n");
+            printf("  -> [PASS] D3D11StateGuard 状态隔离全部通过：无状态泄漏、无绑定冲突！\n");
+        }
+    }
+
     // 6. 4K60 GPU 性能基准测试（GPU Timestamp Queries，无 CPU Readback）
     printf("\n-----------------------------------------------------------------\n");
     printf("  [性能压测: 3840x2160 (4K60) 全屏渲染纯 GPU 开销基准]\n");
+
     printf("-----------------------------------------------------------------\n");
     const UINT k4kW = 3840;
     const UINT k4kH = 2160;
@@ -532,7 +675,7 @@ int main()
     }
 
     printf("\n=================================================================\n");
-    printf("  ToneMapHarness 测试台验证完成: Gate P4 全部指标达成 (GO)!\n");
+    printf("  ToneMapHarness 测试台验证完成: 全部指标达成 (PASS)!\n");
     printf("=================================================================\n");
 
     return 0;

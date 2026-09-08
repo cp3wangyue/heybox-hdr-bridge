@@ -9,6 +9,8 @@
 #include "ColorDetect/ColorDetector.h"
 #include "Diagnostics/ConfigManager.h"
 #include "Diagnostics/SafetyGuard.h"
+#include "Diagnostics/CompatibilityManager.h"
+#include "Diagnostics/BridgeLog.h"
 
 using namespace ABI::Windows::Graphics::Capture;
 using namespace ABI::Windows::Graphics::DirectX;
@@ -93,28 +95,48 @@ ProxyFramePool::ProxyFramePool(
             const auto& cfg = ConfigManager::Instance().GetConfig();
             ToneMapParams params{};
             params.sdrWhiteNits = (cfg.hdr.sdrReferenceWhite > 10.0f) ? cfg.hdr.sdrReferenceWhite : sdrWhite;
-            params.sourcePeakNits = (cfg.hdr.sourcePeakNits > 10.0f) ? cfg.hdr.sourcePeakNits : 1500.0f;
+            params.sourcePeakNits = (cfg.hdr.sourcePeakNits > 10.0f) ? cfg.hdr.sourcePeakNits : 1000.0f;
             params.exposure = cfg.hdr.exposure;
             params.highlightRollOff = cfg.hdr.highlightRollOff;
-            params.oetfType = static_cast<uint32_t>(OetfType::Rec709);
 
+            // 解析 OETF 传递函数（默认 sRGB，暗部扎实对比度通透，与 OBS 对齐）
+            std::string outStr = cfg.general.output;
+            std::transform(outStr.begin(), outStr.end(), outStr.begin(), [](char c) { return static_cast<char>(::tolower(static_cast<unsigned char>(c))); });
+            if (outStr == "rec709" || outStr == "bt709") {
+                params.oetfType = static_cast<uint32_t>(OetfType::Rec709);
+            } else if (outStr == "linear") {
+                params.oetfType = static_cast<uint32_t>(OetfType::Linear);
+            } else if (outStr == "gamma24" || outStr == "bt1886") {
+                params.oetfType = static_cast<uint32_t>(OetfType::Gamma24);
+            } else {
+                params.oetfType = static_cast<uint32_t>(OetfType::sRGB);
+            }
+
+            // 解析色调映射算子（默认 BT2390 工业级 EETF，与 OBS 对齐）
             std::string tm = cfg.hdr.toneMapper;
             std::transform(tm.begin(), tm.end(), tm.begin(), [](char c) { return static_cast<char>(::tolower(static_cast<unsigned char>(c))); });
             if (tm == "clamp") params.toneMapper = static_cast<uint32_t>(ToneMapperType::Clamp);
             else if (tm == "reinhard") params.toneMapper = static_cast<uint32_t>(ToneMapperType::ExtendedReinhard);
+            else if (tm == "obsreinhard" || tm == "reinhard_obs") params.toneMapper = static_cast<uint32_t>(ToneMapperType::OBSReinhard);
             else if (tm == "hable") params.toneMapper = static_cast<uint32_t>(ToneMapperType::Hable);
             else if (tm == "aces") params.toneMapper = static_cast<uint32_t>(ToneMapperType::ACES);
-            else params.toneMapper = static_cast<uint32_t>(ToneMapperType::LumaHuePreserving);
+            else if (tm == "lumahuepreserve" || tm == "luma") params.toneMapper = static_cast<uint32_t>(ToneMapperType::LumaHuePreserving);
+            else params.toneMapper = static_cast<uint32_t>(ToneMapperType::BT2390); // 默认 BT2390 (OBS Studio 28+ 官方对齐)
 
             m_toneMapper.SetParams(params);
+            BRIDGE_LOG("FramePool", "ToneMapConfig: toneMapper=%u oetf=%u sdrWhite=%.1f peak=%.1f exposure=%.2f rollOff=%.2f",
+                       params.toneMapper, params.oetfType, params.sdrWhiteNits, params.sourcePeakNits, params.exposure, params.highlightRollOff);
 
             EnsureOutputPool(static_cast<UINT>(size.Width), static_cast<UINT>(size.Height));
         }
     }
+    BRIDGE_LOG("FramePool", "ProxyFramePool initialized: d3dDevice=%p d3dContext=%p isHdrElevated=%d bufferCount=%d size=%dx%d",
+               m_d3dDevice.Get(), m_d3dContext.Get(), m_isHdrElevated ? 1 : 0, m_bufferCount, size.Width, size.Height);
 }
 
 ProxyFramePool::~ProxyFramePool()
 {
+    BRIDGE_LOG("FramePool", "ProxyFramePool destroyed (totalProcessedFrames=%llu)", m_processedFrames.load());
     ReleaseOutputPool();
 }
 
@@ -132,6 +154,7 @@ bool ProxyFramePool::EnsureOutputPool(UINT width, UINT height)
     if (m_poolWidth == width && m_poolHeight == height && !m_outputPool.empty()) {
         return true;
     }
+    BRIDGE_LOG("FramePool", "EnsureOutputPool reallocating buffers: %ux%u (previous: %ux%u)", width, height, m_poolWidth, m_poolHeight);
 
     ReleaseOutputPool();
 
@@ -229,6 +252,13 @@ HRESULT STDMETHODCALLTYPE ProxyFramePool::TryGetNextFrame(IDirect3D11CaptureFram
 
     // 若未升级（SDR 原生模式）或被 SafetyGuard 旁路/发生异常，Fail-open 原样交还真实帧
     if (!m_isHdrElevated || !SafetyGuard::Instance().CanIntercept() || !m_toneMapper.IsInitialized() || !m_d3dContext) {
+        static bool s_loggedBypass = false;
+        if (!s_loggedBypass) {
+            BRIDGE_LOG("FramePool", "TryGetNextFrame Bypassed: isElevated=%d canIntercept=%d tmInit=%d d3dCtx=%p",
+                       m_isHdrElevated ? 1 : 0, SafetyGuard::Instance().CanIntercept() ? 1 : 0,
+                       m_toneMapper.IsInitialized() ? 1 : 0, m_d3dContext.Get());
+            s_loggedBypass = true;
+        }
         *result = realFrame.Detach();
         return S_OK;
     }
@@ -241,6 +271,7 @@ HRESULT STDMETHODCALLTYPE ProxyFramePool::TryGetNextFrame(IDirect3D11CaptureFram
     ComPtr<IDirect3DSurface> inSurface;
     hr = realFrame->get_Surface(inSurface.GetAddressOf());
     if (FAILED(hr) || !inSurface) {
+        BRIDGE_LOG("FramePool", "get_Surface failed (hr=0x%08lX)", hr);
         *result = realFrame.Detach();
         return S_OK;
     }
@@ -248,6 +279,7 @@ HRESULT STDMETHODCALLTYPE ProxyFramePool::TryGetNextFrame(IDirect3D11CaptureFram
     ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
     hr = inSurface.As(&access);
     if (FAILED(hr)) {
+        BRIDGE_LOG("FramePool", "inSurface.As(IDirect3DDxgiInterfaceAccess) failed (hr=0x%08lX)", hr);
         *result = realFrame.Detach();
         return S_OK;
     }
@@ -255,6 +287,7 @@ HRESULT STDMETHODCALLTYPE ProxyFramePool::TryGetNextFrame(IDirect3D11CaptureFram
     ComPtr<ID3D11Texture2D> inTex;
     hr = access->GetInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(inTex.GetAddressOf()));
     if (FAILED(hr) || !inTex) {
+        BRIDGE_LOG("FramePool", "access->GetInterface(ID3D11Texture2D) failed (hr=0x%08lX)", hr);
         *result = realFrame.Detach();
         return S_OK;
     }
@@ -264,6 +297,7 @@ HRESULT STDMETHODCALLTYPE ProxyFramePool::TryGetNextFrame(IDirect3D11CaptureFram
 
     // 确保池尺寸匹配
     if (!EnsureOutputPool(inDesc.Width, inDesc.Height)) {
+        BRIDGE_LOG("FramePool", "EnsureOutputPool(%u, %u) failed", inDesc.Width, inDesc.Height);
         *result = realFrame.Detach();
         return S_OK;
     }
@@ -274,11 +308,19 @@ HRESULT STDMETHODCALLTYPE ProxyFramePool::TryGetNextFrame(IDirect3D11CaptureFram
     // 在 GPU 上执行全屏色调映射 Pass (FP16 scRGB -> Rec.709 BGRA8)
     bool ok = m_toneMapper.Execute(m_d3dContext.Get(), inTex.Get(), slot.texture.Get());
     if (!ok) {
+        static int s_failCount = 0;
+        if (++s_failCount <= 10) {
+            BRIDGE_LOG("FramePool", "m_toneMapper.Execute FAILED! Falling back to raw frame (failCount=%d)", s_failCount);
+        }
         *result = realFrame.Detach();
         return S_OK;
     }
 
-    m_processedFrames++;
+    uint64_t frameNum = ++m_processedFrames;
+    if (frameNum <= 5 || (frameNum % 300 == 0)) {
+        BRIDGE_LOG("FramePool", "ToneMapped frame #%llu (in: %ux%u format=%d -> out slot %zu)",
+                   frameNum, inDesc.Width, inDesc.Height, inDesc.Format, m_currentSlot);
+    }
 
     // 封装并返回包含映射后 BGRA8 表面、原时间戳与原尺寸的代理帧
     auto proxy = Make<ProxyFrame>(slot.surface.Get(), ts, contentSize);
@@ -342,8 +384,25 @@ HRESULT ProxyFramePoolStatics::InterceptCreate(
     if (!result) return E_POINTER;
     *result = nullptr;
 
-    // 1. 安全前置检查 (SafetyGuard: Kill Switch / Crash Marker / 版本锁 / 配置总开关)
-    if (!SafetyGuard::Instance().CanIntercept()) {
+    // 从 WinRT IDirect3DDevice 获取底层的 ID3D11Device
+    ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
+    ComPtr<ID3D11Device> d3dDevice;
+    if (device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(access.GetAddressOf())))) {
+        access->GetInterface(IID_PPV_ARGS(d3dDevice.GetAddressOf()));
+    }
+
+    // 1. 四级版本兼容性与能力检测 (CompatibilityManager)
+    auto compatDecision = CompatibilityManager::Instance().Evaluate(d3dDevice.Get(), pixelFormat);
+
+    BRIDGE_LOG("FramePool", "InterceptCreate: freeThreaded=%d reqFmt=%d buffers=%d size=%dx%d",
+               freeThreaded ? 1 : 0, static_cast<int>(pixelFormat), numberOfBuffers, size.Width, size.Height);
+    BRIDGE_LOG("FramePool", "Decision: tier=%d, bridgeEnabled=%d, CanIntercept=%d",
+               static_cast<int>(compatDecision.tier), compatDecision.bridgeEnabled ? 1 : 0,
+               SafetyGuard::Instance().CanIntercept() ? 1 : 0);
+
+    // 2. 安全前置检查 (SafetyGuard 与 兼容性守门：Incompatible/DiagnoseOnly/KillSwitch 均强制 Fail-open)
+    if (!SafetyGuard::Instance().CanIntercept() || !compatDecision.bridgeEnabled) {
+        BRIDGE_LOG("FramePool", "SafetyGuard CanIntercept=false or bridgeEnabled=false -> Passthrough native");
         if (freeThreaded && m_realStatics2) {
             return m_realStatics2->CreateFreeThreaded(device, pixelFormat, numberOfBuffers, size, result);
         } else if (m_realStatics1) {
@@ -352,10 +411,14 @@ HRESULT ProxyFramePoolStatics::InterceptCreate(
         return E_NOINTERFACE;
     }
 
-    // 2. AutoDetect 判定树 (ColorDetector: HDR 状态、格式判定与色彩空间识别)
+    // 3. AutoDetect 判定树 (ColorDetector: HDR 状态、格式判定与色彩空间识别)
     DXGI_FORMAT reqFormat = static_cast<DXGI_FORMAT>(pixelFormat);
     DecisionResult decision = ColorDetector::Evaluate(reqFormat);
     bool shouldElevate = (decision.action == DecisionAction::ElevateAndConvert);
+
+    BRIDGE_LOG("FramePool", "ColorDecision: action=%d, colorSpace=%d, shouldElevate=%d, sdrWhite=%.1f",
+               static_cast<int>(decision.action), static_cast<int>(decision.colorSpace),
+               shouldElevate ? 1 : 0, decision.sdrWhiteNits);
 
     DirectXPixelFormat targetFormat = pixelFormat;
     if (shouldElevate) {
@@ -373,6 +436,8 @@ HRESULT ProxyFramePoolStatics::InterceptCreate(
         hr = E_NOINTERFACE;
     }
 
+    BRIDGE_LOG("FramePool", "Native Create/CreateFreeThreaded: hr=0x%08lX (targetFormat=%d)", hr, static_cast<int>(targetFormat));
+
     if (FAILED(hr) || !realPool) {
         return hr;
     }
@@ -380,13 +445,6 @@ HRESULT ProxyFramePoolStatics::InterceptCreate(
     if (!shouldElevate) {
         *result = realPool.Detach();
         return S_OK;
-    }
-
-    // 从 WinRT IDirect3DDevice 获取底层的 ID3D11Device
-    ComPtr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
-    ComPtr<ID3D11Device> d3dDevice;
-    if (device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(access.GetAddressOf())))) {
-        access->GetInterface(IID_PPV_ARGS(d3dDevice.GetAddressOf()));
     }
 
     auto proxyPool = Make<ProxyFramePool>(realPool, device, d3dDevice, numberOfBuffers, size, true);

@@ -15,7 +15,7 @@ target_link_libraries(hdrfix PRIVATE
 )
 
 # 简易安装、卸载与伴随加载器 (hdrfix_loader.exe)
-add_executable(hdrfix_loader loader.cpp)
+add_executable(hdrfix_loader WIN32 loader.cpp)
 target_link_libraries(hdrfix_loader PRIVATE
     ole32
     shell32

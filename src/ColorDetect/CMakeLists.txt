@@ -1,4 +1,4 @@
-# ColorDetect 库：AutoDetect 判定树（计划书 §10.1）
+# ColorDetect 库：AutoDetect 判定树
 add_library(hdrfix_colordetect STATIC
     ColorDetector.cpp
 )

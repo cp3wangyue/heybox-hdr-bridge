@@ -1,12 +1,15 @@
-// tonemap_scrgb.hlsl — 输入路径 A：FP16 scRGB → SDR Rec.709（P4，计划书 §8.1 / §8.3 / §8.5）
+// tonemap_scrgb.hlsl — FP16 scRGB → SDR Rec.709/sRGB
+//
+// 集成 ITU-R BT.2390 EETF（OBS Studio 28+ 对齐）与 Rec.2020 宽色域感知空间映射。
 //
 // 物理模型与要点：
 //  1. scRGB 是线性光、Rec.709/sRGB 原色；标称 (1,1,1) = 80 nits D65 白。
 //  2. Windows Advanced Color 下，SDR 参考白通过常量缓冲注入（sdrWhiteNits，如 280 nits 对应 scRGB 白点 3.5）。
-//  3. 绝对禁止在色调映射前直接 clamp 到 1.0（否则高光大面积爆白截断）。
-//  4. 归一化到 SDR 参考白基准，使 SDR UI 处于 1.0 附近，HDR 高光平滑 roll-off。
-//  5. 支持 Clamp(对照)、Extended Reinhard、Hable、ACES Fitted、Luminance Hue-Preserving 5 种算法。
-//  6. 输出 Rec.709 OETF（可切 sRGB），落入 [0, 1] 供 8-bit SDR 编码使用。
+//  3. 采用 ITU-R BT.2390 EETF（Hermite 三次样条）：在拐点 KS 以下 100% 严格 1:1 无损透传 SDR 内容；
+//     拐点以上在 SMPTE ST 2084 (PQ) 感知空间中平滑压缩，保持一阶连续，零爆白裁切。
+//  4. 在 Rec.2020 宽色域中执行感知色调映射，避免高饱和色彩在 Rec.709 边界剪切与色相畸变。
+//  5. 采用等比例 RGB 缩放，保持 0 色相漂移，彩色高光不泛白。
+//  6. 默认输出 IEC 61966-2-1 sRGB OETF（与 OBS 对齐），提供扎实深沉的暗部与鲜明通透的对比度。
 
 Texture2D<float4> g_InputTexture : register(t0);
 SamplerState      g_LinearSampler : register(s0);
@@ -16,10 +19,10 @@ cbuffer ToneMapConstants : register(b0)
     float sdrWhiteNits;      // 系统 SDR 参考白（默认 280.0f）
     float sourcePeakNits;    // 源高光峰值（默认 1000.0f）
     float exposure;          // 曝光 EV 补偿（默认 0.0f）
-    uint  toneMapper;        // 0: Clamp, 1: Reinhard, 2: Hable, 3: ACES, 4: Luma-HuePreserve
+    uint  toneMapper;        // 0: Clamp, 1: Reinhard, 2: Hable, 3: ACES, 4: Luma-HuePreserve, 5: BT2390, 6: OBS-Reinhard
     float highlightRollOff;  // 高光滚降调节系数（默认 1.0f）
     float sdrTargetNits;     // SDR 目标白（默认 80.0f）
-    uint  oetfType;          // 0: Rec.709, 1: sRGB, 2: Linear
+    uint  oetfType;          // 0: Rec.709, 1: sRGB, 2: Linear, 3: Gamma2.4
     float pad;
 };
 
@@ -36,6 +39,44 @@ VSOutput ToneMapVS(uint id : SV_VertexID)
     output.uv = float2((id << 1) & 2, id & 2);
     output.pos = float4(output.uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
     return output;
+}
+
+// -------------------------------------------------------------
+// 色彩空间转换矩阵（Rec.709 <-> Rec.2020 D65）
+// -------------------------------------------------------------
+float3 rec709_to_rec2020(float3 v)
+{
+    float r = dot(v, float3(0.62740389593469903, 0.32928303837788370, 0.043313065687417225));
+    float g = dot(v, float3(0.069097289358232075, 0.91954039507545871, 0.011362315566309178));
+    float b = dot(v, float3(0.016391438875150280, 0.088013307877225749, 0.89559525324762401));
+    return float3(r, g, b);
+}
+
+float3 rec2020_to_rec709(float3 v)
+{
+    float r = dot(v, float3(1.6604910021084345, -0.58764113878854951, -0.072849863319884883));
+    float g = dot(v, float3(-0.12455047452159074, 1.1328998971259603, -0.0083494226043694768));
+    float b = dot(v, float3(-0.018150763354905303, -0.10057889800800739, 1.1187296613629127));
+    return float3(r, g, b);
+}
+
+// -------------------------------------------------------------
+// SMPTE ST 2084 (PQ) 传递函数 (1.0 = 10000 nits)
+// -------------------------------------------------------------
+float linear_to_st2084_channel(float x)
+{
+    if (x <= 1e-8f) return 0.0f;
+    float c = pow(x, 0.1593017578f);
+    return pow((0.8359375f + 18.8515625f * c) / (1.0f + 18.6875f * c), 78.84375f);
+}
+
+float st2084_to_linear_channel(float u)
+{
+    if (u <= 1e-8f) return 0.0f;
+    float c = pow(u, 1.0f / 78.84375f);
+    float num = max(c - 0.8359375f, 0.0f);
+    float den = max(1e-6f, 18.8515625f - 18.6875f * c);
+    return pow(num / den, 1.0f / 0.1593017578f);
 }
 
 // -------------------------------------------------------------
@@ -75,7 +116,74 @@ float3 LinearToSRGB(float3 rgb)
 // 色调映射算法实现
 // -------------------------------------------------------------
 
-// Hable / Uncharted 2 曲线
+// 1. ITU-R BT.2390 EETF (OBS Studio 工业级对齐算法，推荐默认)
+// 在 Rec.2020 宽色域中转 + SMPTE ST 2084 感知空间中执行 Hermite 三次样条压缩
+// 特性：
+//   - 拐点 KS 以下：100% 严格无损 1:1 透传，保持原有对比度、中灰与暗部细节
+//   - 拐点 KS 以上：一阶导数连续 C1 平滑滚降至最大白点，无硬裁切
+//   - 等比例缩放 RGB：色相 0 偏移，彩色高光不泛白
+float3 ToneMap_BT2390(float3 linearScrgb, float sourcePeak, float sdrWhite, float rollOff)
+{
+    // 将 scRGB 转换为以 10000 nits 为基准的绝对线性光 (scRGB 1.0 = 80 nits)
+    float3 rgb10k = max(0.0f, linearScrgb) * (80.0f / 10000.0f);
+
+    // 转入 Rec.2020 宽色域感知空间，防止高光在 Rec.709 边缘发生色相畸变与通道剪切
+    float3 rgb2020 = max(0.0f, rec709_to_rec2020(rgb10k));
+
+    float Lw = max(sdrWhite + 10.0f, sourcePeak);
+    float Lmax = max(10.0f, sdrWhite);
+
+    float Lw_pq = linear_to_st2084_channel(Lw / 10000.0f);
+    float Lmax_pq = linear_to_st2084_channel(Lmax / 10000.0f);
+
+    float maxRGB1_linear = max(rgb2020.r, max(rgb2020.g, rgb2020.b));
+    float maxRGB1_pq = linear_to_st2084_channel(maxRGB1_linear);
+
+    float E1 = saturate(maxRGB1_pq / max(1e-6f, Lw_pq));
+    float maxLum = Lmax_pq / max(1e-6f, Lw_pq);
+    float KS = clamp(((1.5f * maxLum) - 0.5f) * rollOff, 0.0f, 0.99f);
+
+    if (E1 <= KS)
+    {
+        return saturate(linearScrgb * (80.0f / Lmax));
+    }
+
+    float T = (E1 - KS) / max(1e-6f, 1.0f - KS);
+    float Tsquared = T * T;
+    float Tcubed = Tsquared * T;
+    float P = (2.0f * Tcubed - 3.0f * Tsquared + 1.0f) * KS
+            + (Tcubed - 2.0f * Tsquared + T) * (1.0f - KS)
+            + (-2.0f * Tcubed + 3.0f * Tsquared) * maxLum;
+
+    float maxRGB2_pq = P * Lw_pq;
+    float maxRGB2_linear = st2084_to_linear_channel(maxRGB2_pq);
+
+    // 严格保持各通道等比例缩放（0 色相漂移）
+    float scale = maxRGB2_linear / max(6.10352e-5f, maxRGB1_linear);
+    float3 mapped2020 = rgb2020 * scale;
+
+    // 转回 Rec.709 色域
+    float3 mapped709 = rec2020_to_rec709(mapped2020);
+
+    // 归一化到 [0, 1] SDR 范围 (Lmax 映射至 1.0)
+    float3 sdrLinear = mapped709 * (10000.0f / Lmax);
+    return saturate(sdrLinear);
+}
+
+// 2. OBS Studio 风格 Reinhard (Rec.2020 宽色域中转)
+float3 ToneMap_OBS_Reinhard(float3 linearScrgb, float sdrWhite)
+{
+    float safeSdrWhite = max(10.0f, sdrWhite);
+    float multiplier = 80.0f / safeSdrWhite;
+    float3 normRgb = max(0.0f, linearScrgb) * multiplier;
+
+    float3 rgb2020 = max(0.0f, rec709_to_rec2020(normRgb));
+    float3 mapped2020 = rgb2020 / (rgb2020 + 1.0f);
+    float3 mapped709 = rec2020_to_rec709(mapped2020);
+    return saturate(mapped709 * 2.0f);
+}
+
+// 3. Hable / Uncharted 2 曲线
 float3 HableCurve(float3 x)
 {
     const float A = 0.15f; // Shoulder Strength
@@ -95,7 +203,7 @@ float3 ToneMap_Hable(float3 linearCol, float peakWhite)
     return curr * whiteScale;
 }
 
-// ACES Fitted (Stephen Hill / Narkowicz 拟合改进)
+// 4. ACES Fitted (Stephen Hill / Narkowicz 拟合改进)
 float3 ToneMap_ACES(float3 color)
 {
     float3 x = color * 0.6f;
@@ -104,11 +212,10 @@ float3 ToneMap_ACES(float3 color)
     const float c = 2.43f;
     const float d = 0.59f;
     const float e = 0.14f;
-    // 渐近极限为 a/c = 2.51/2.43 ≈ 1.0329
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e)) / 1.033f;
 }
 
-// Extended Reinhard (白点控制)
+// 5. Extended Reinhard (白点控制)
 float3 ToneMap_Reinhard(float3 color, float peakWhite, float rollOff)
 {
     float maxCh = max(color.r, max(color.g, color.b));
@@ -120,25 +227,17 @@ float3 ToneMap_Reinhard(float3 color, float peakWhite, float rollOff)
     return color * (mapped / maxCh);
 }
 
-// 基于亮度/最大分量的高光平滑 roll-off + 色相与饱和度保持（Alpha 策略）
-// 特性：
-//   1. 在膝点 knee (默认 0.70) 以下，100% 严格线性保真 (f(x) = x)，SDR 内容、暗部与中间调无任何畸变；
-//   2. 在膝点之上，采用一阶连续 C1 有理曲线平滑压缩高光，使超亮 HDR 内容渐近收敛于 1.0，绝不爆白截断；
-//   3. 使用 max(R,G,B) 驱动同比例缩放，严格保持色相不变，彩色高光不泛白、肤色不漂移。
+// 6. 基于亮度的色度保持滚降
 float3 ToneMap_LumaHuePreserving(float3 color, float peakWhite, float rollOff)
 {
     float maxCh = max(color.r, max(color.g, color.b));
     if (maxCh < 1e-6f) return color;
 
-    // 线性保留膝点 (0.7 对应 SDR 中间灰到高光过渡区域)
     const float k = 0.70f;
     if (maxCh <= k) {
-        return color; // SDR 基础区域 1:1 无损透传
+        return color;
     }
 
-    // 平滑压缩函数：在 x=k 处 f(k)=k, f'(k)=1；当 x->peakWhite 时平滑渐近于 1.0
-    // 公式: f(x) = k + (1 - k) * (x - k) / [ (x - k) + S ]
-    // 其中 S 控制压缩陡峭程度，S = (1 - k) * rollOff
     float delta = maxCh - k;
     float S = (1.0f - k) * max(0.2f, rollOff);
     float compressed = k + ((1.0f - k) * delta) / (delta + S);
@@ -160,14 +259,10 @@ float4 ToneMapPS(VSOutput input) : SV_Target
     // 2. 曝光调节 (EV)
     linearRgb *= exp2(exposure);
 
-    // 3. 归一化到 SDR 参考白基准
-    // scRGB 中 (1,1,1) 对应 80 nits；Windows SDR 参考白为 sdrWhiteNits (默认 280)
-    // 纯白 SDR UI 在 scRGB 中的值为 sdrWhiteNits / 80.0
+    // 3. 归一化参数准备
     float safeSdrWhite = max(10.0f, sdrWhiteNits);
     float sdrScale = 80.0f / safeSdrWhite;
     float3 normRgb = linearRgb * sdrScale;
-
-    // 相对 SDR 白的源高光峰值比例 (例如 1500 nits / 280 nits ≈ 5.36)
     float peakScale = max(1.0001f, sourcePeakNits / safeSdrWhite);
 
     // 4. 选择色调映射算法
@@ -190,9 +285,17 @@ float4 ToneMapPS(VSOutput input) : SV_Target
         mappedRgb = ToneMap_ACES(normRgb);
         break;
 
-    case 4: // Luminance Hue-Preserving (推荐默认)
-    default:
+    case 4: // Luminance Hue-Preserving
         mappedRgb = ToneMap_LumaHuePreserving(normRgb, peakScale, highlightRollOff);
+        break;
+
+    case 6: // OBS Reinhard
+        mappedRgb = ToneMap_OBS_Reinhard(linearRgb, safeSdrWhite);
+        break;
+
+    case 5: // ITU-R BT.2390 EETF (OBS 工业级参考对齐，默认)
+    default:
+        mappedRgb = ToneMap_BT2390(linearRgb, sourcePeakNits, safeSdrWhite, highlightRollOff);
         break;
     }
 
@@ -205,6 +308,8 @@ float4 ToneMapPS(VSOutput input) : SV_Target
         finalSdr = LinearToRec709(mappedRgb);
     } else if (oetfType == 1) {
         finalSdr = LinearToSRGB(mappedRgb);
+    } else if (oetfType == 3) {
+        finalSdr = pow(mappedRgb, 1.0f / 2.4f);
     } else {
         finalSdr = mappedRgb; // Linear Passthrough
     }

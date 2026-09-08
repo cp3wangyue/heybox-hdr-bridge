@@ -1,4 +1,4 @@
-﻿# env_fingerprint.ps1 — P0 环境指纹采集（计划书 §4.1）
+# env_fingerprint.ps1 — 环境指纹采集脚本
 # 记录 Windows 版本、GPU/驱动、显示器 HDR 状态、分辨率/刷新率/缩放，
 # 以及小黑盒客户端版本、主 EXE / 关键 DLL 的文件版本与 SHA-256。
 # 用法：powershell -File tools\env_fingerprint.ps1 [-ClientPath "C:\...\小黑盒"] [-OutDir docs\recon]
@@ -107,7 +107,7 @@ $json = $fp | ConvertTo-Json -Depth 6
 Set-Content -Path $jsonPath -Value $json -Encoding UTF8
 
 $md = New-Object System.Text.StringBuilder
-[void]$md.AppendLine("# 环境指纹（P0，§4.1）")
+[void]$md.AppendLine("# 环境指纹")
 [void]$md.AppendLine("")
 [void]$md.AppendLine("- 采集时间：$($fp.collectedAt)")
 [void]$md.AppendLine("- OS：$($fp.os.caption) build $($fp.os.buildFull)（$($fp.os.displayVersion)）")

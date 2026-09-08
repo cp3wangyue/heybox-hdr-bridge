@@ -1,5 +1,5 @@
 #pragma once
-// CaptureProbe/hdr_control.h — 系统 HDR 开关（P0 A/B 自动化、P7 稳定性场景 §11.4）
+// CaptureProbe/hdr_control.h — 系统 HDR 开关（自动化测试与稳定性验证）
 // 只改显示器高级色彩状态，不做任何帧/客户端操作；调用方负责在测试后恢复原状态。
 
 #include <string>

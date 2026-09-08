@@ -1,5 +1,5 @@
 #pragma once
-// Integration/FramePoolProxy.h — WGC 帧池与帧代理（计划书 §9.1 / §9.2）
+// Integration/FramePoolProxy.h — WGC 帧池与帧代理
 //
 // 核心职责：
 //   1. ProxyFramePoolStatics：拦截 CreateFreeThreaded / Create，透明将请求提升为 FP16 scRGB 池；

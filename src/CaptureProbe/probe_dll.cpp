@@ -1,4 +1,4 @@
-// hdrfix_probe.dll — P2 只读探针（计划书 §6.1：只记录、不替换帧）
+// hdrfix_probe.dll — 只读探针（只记录、不替换帧）
 //
 // 注入到 HeyboxChat 进程后：
 //   1. 等待 VolcEngineRTC.dll 加载（共享会话建立时出现）

@@ -1,5 +1,5 @@
 #pragma once
-// CaptureProbe/probe_logger.h — 低开销采样日志（附录 A 字段 / §3.2 诊断要求）
+// CaptureProbe/probe_logger.h — 低开销采样日志
 // 默认每秒抽样落盘；force=true 的记录无视限流（Debug 帧级采样）。
 // 线程安全；文件为逐行 flush，崩溃时最多丢一行。
 

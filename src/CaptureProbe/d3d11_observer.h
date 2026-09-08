@@ -1,5 +1,5 @@
 #pragma once
-// CaptureProbe/d3d11_observer.h — 只读 D3D11 观察器（P2，计划书 §6.1：先做观察器，再做修改器）
+// CaptureProbe/d3d11_observer.h — 只读 D3D11 观察器
 //
 // 原理：IAT Hook 目标模块对 D3D11CreateDevice 的静态导入 → 拿到 SDK 的设备 →
 //       对该设备实例做 vtable 克隆，只挂这一个实例的 CreateTexture2D(vtable[5]) 与

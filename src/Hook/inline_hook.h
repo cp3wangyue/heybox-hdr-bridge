@@ -1,5 +1,11 @@
 #pragma once
-// Hook/inline_hook.h — 轻量级 x64 Inline Hook 与 Trampoline 管理（计划书 §2.3 最小侵入）
+// Hook/inline_hook.h — x64 Inline Hook 封装（基于工业级成熟 MinHook 引擎）
+//
+// 保证：
+//   1. 完整解码与重定位 x64 指令（包括 RIP-relative、call rel32、jmp rel32、jcc rel8/32 等）；
+//   2. 线程安全的挂载与恢复；
+//   3. 安装失败 Fail-open；
+//   4. 支持随时热卸载 (Remove)。
 
 #include <windows.h>
 #include <cstddef>
@@ -15,10 +21,10 @@ public:
     InlineHook(const InlineHook&) = delete;
     InlineHook& operator=(const InlineHook&) = delete;
 
-    // 安装 Hook：将 targetFunction 的入口重定向至 hookFunction，并通过 Trampoline 保存原函数调用能力
+    // 安装 Hook：将 targetFunction 入口重定向至 hookFunction，并通过 Trampoline 保存原函数调用能力
     bool Install(void* targetFunction, void* hookFunction);
 
-    // 卸载 Hook：恢复原函数头部指令
+    // 卸载 Hook：恢复原函数头部指令与线程状态
     bool Remove();
 
     bool IsInstalled() const { return m_installed; }
@@ -32,8 +38,6 @@ public:
 private:
     void* m_target = nullptr;
     void* m_trampoline = nullptr;
-    uint8_t m_originalBytes[32]{};
-    size_t m_stolenBytes = 0;
     bool m_installed = false;
 };
 

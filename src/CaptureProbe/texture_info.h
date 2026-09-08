@@ -1,5 +1,5 @@
 #pragma once
-// CaptureProbe/texture_info.h — D3D11 纹理描述快照（计划书 §6.2 要求的字段全集）
+// CaptureProbe/texture_info.h — D3D11 纹理描述快照
 // 只读：不做任何资源修改，供 Probe 与后续 ColorDetect 使用。
 
 #include <d3d11.h>

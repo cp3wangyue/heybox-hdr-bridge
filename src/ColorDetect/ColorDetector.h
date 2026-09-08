@@ -1,7 +1,7 @@
 #pragma once
-// ColorDetect/ColorDetector.h — 输入格式与色彩空间 AutoDetect 判定树（计划书 §10.1）
+// ColorDetect/ColorDetector.h — 输入格式与色彩空间 AutoDetect 判定树
 //
-// 按照计划书 §10.1 严格执行判定顺序：
+// 判定顺序：
 //   1. 确认系统/目标输出是否 Advanced Color / HDR；
 //   2. 评估捕获纹理请求格式（FP16 scRGB vs RGB10A2 PQ vs BGRA8 SDR）；
 //   3. 给出精准决策：ElevateAndConvert、Passthrough 或 DiagnoseOnly；

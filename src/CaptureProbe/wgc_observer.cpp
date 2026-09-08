@@ -97,7 +97,7 @@ struct ObserverState {
     winrt::com_ptr<ID3D11Device> device;
     winrt::com_ptr<ID3D11DeviceContext> context;
 
-    // 帧缓冲（等尺寸纹理池，§7.1 原样帧替换机制验证）
+    // 帧缓冲（等尺寸纹理池）
     ID3D11Texture2D* copyTex[3] = {nullptr, nullptr, nullptr};
     ID3D11Texture2D* staging = nullptr;
     UINT texW = 0, texH = 0;
@@ -256,7 +256,7 @@ void ObserverLoop(ObserverState* st)
                 LogEvent(buf);
             }
 
-            // §7.1 原样帧替换机制验证：GPU CopyResource 干跑（每帧，3 张轮转）
+            // GPU CopyResource（每帧，3 张轮转）
             st->context->CopyResource(st->copyTex[st->copyIdx], tex.get());
             st->copyIdx = (st->copyIdx + 1) % 3;
             ++st->copyOps;

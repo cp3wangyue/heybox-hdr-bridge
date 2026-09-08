@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "Diagnostics/ConfigManager.h"
+#include "Diagnostics/CompatibilityManager.h"
 
 namespace hdrfix {
 
@@ -64,6 +65,8 @@ void SafetyGuard::Shutdown()
         ::DeleteFileW(m_markerPath.c_str());
     }
     m_safeFallbackMode.store(false);
+    m_versionChecked.store(false);
+    m_versionPassed.store(false);
     m_lastStatus = SafetyStatus::Safe;
     m_initialized.store(false);
 }
@@ -119,8 +122,13 @@ bool SafetyGuard::CheckCrashMarker()
 
 bool SafetyGuard::CheckVersionLock()
 {
-    const auto& compat = ConfigManager::Instance().GetConfig().compat;
-    if (!compat.strictVersionCheck) return true;
+    if (m_versionChecked.load()) {
+        if (!m_versionPassed.load()) {
+            m_lastStatus = SafetyStatus::VersionRejected;
+            return false;
+        }
+        return true;
+    }
 
     // 获取当前进程主可执行文件名
     wchar_t exePath[MAX_PATH]{};
@@ -131,20 +139,49 @@ bool SafetyGuard::CheckVersionLock()
         exeName = exeName.substr(lastSlash + 1);
     }
 
-    // 白名单允许的宿主进程
-    if (_wcsicmp(exeName.c_str(), L"HeyboxChat.exe") == 0 ||
-        _wcsicmp(exeName.c_str(), L"probe_testhost.exe") == 0 ||
-        _wcsicmp(exeName.c_str(), L"tone_map_harness.exe") == 0) {
-        return true;
-    }
-
-    if (!compat.allowUnknownBuild) {
+    // 允许的宿主进程
+    if (_wcsicmp(exeName.c_str(), L"HeyboxChat.exe") != 0 &&
+        _wcsicmp(exeName.c_str(), L"probe_testhost.exe") != 0 &&
+        _wcsicmp(exeName.c_str(), L"tone_map_harness.exe") != 0 &&
+        _wcsicmp(exeName.c_str(), L"hook_stress_test.exe") != 0 &&
+        _wcsicmp(exeName.c_str(), L"compat_test.exe") != 0) {
         m_lastStatus = SafetyStatus::VersionRejected;
+        m_versionPassed.store(false);
+        m_versionChecked.store(true);
         return false;
     }
 
+    const auto& compat = ConfigManager::Instance().GetConfig().compat;
+    auto decision = CompatibilityManager::Instance().Evaluate();
+
+    if (decision.tier == CompatibilityTier::Incompatible) {
+        m_lastStatus = SafetyStatus::VersionRejected;
+        m_versionPassed.store(false);
+        m_versionChecked.store(true);
+        return false;
+    }
+
+    if (decision.tier == CompatibilityTier::DiagnoseOnly) {
+        m_lastStatus = SafetyStatus::CrashMarkerDetected;
+        m_versionPassed.store(false);
+        m_versionChecked.store(true);
+        return false;
+    }
+
+    if (decision.tier == CompatibilityTier::UntestedCompatible) {
+        if (!compat.allowUntestedCompatible) {
+            m_lastStatus = SafetyStatus::VersionRejected;
+            m_versionPassed.store(false);
+            m_versionChecked.store(true);
+            return false;
+        }
+    }
+
+    m_versionPassed.store(true);
+    m_versionChecked.store(true);
     return true;
 }
+
 
 bool SafetyGuard::CanIntercept()
 {

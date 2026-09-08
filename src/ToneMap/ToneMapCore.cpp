@@ -1,9 +1,10 @@
-// ToneMapCore.cpp — P4 GPU Tone Mapping 核心实现
 #include "ToneMapCore.h"
 
 #include <d3dcompiler.h>
 #include <cstdio>
 #include <vector>
+
+#include "Diagnostics/BridgeLog.h"
 
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -60,6 +61,38 @@ VSOutput ToneMapVS(uint id : SV_VertexID)
     return output;
 }
 
+float3 rec709_to_rec2020(float3 v)
+{
+    float r = dot(v, float3(0.62740389593469903, 0.32928303837788370, 0.043313065687417225));
+    float g = dot(v, float3(0.069097289358232075, 0.91954039507545871, 0.011362315566309178));
+    float b = dot(v, float3(0.016391438875150280, 0.088013307877225749, 0.89559525324762401));
+    return float3(r, g, b);
+}
+
+float3 rec2020_to_rec709(float3 v)
+{
+    float r = dot(v, float3(1.6604910021084345, -0.58764113878854951, -0.072849863319884883));
+    float g = dot(v, float3(-0.12455047452159074, 1.1328998971259603, -0.0083494226043694768));
+    float b = dot(v, float3(-0.018150763354905303, -0.10057889800800739, 1.1187296613629127));
+    return float3(r, g, b);
+}
+
+float linear_to_st2084_channel(float x)
+{
+    if (x <= 1e-8f) return 0.0f;
+    float c = pow(x, 0.1593017578f);
+    return pow((0.8359375f + 18.8515625f * c) / (1.0f + 18.6875f * c), 78.84375f);
+}
+
+float st2084_to_linear_channel(float u)
+{
+    if (u <= 1e-8f) return 0.0f;
+    float c = pow(u, 1.0f / 78.84375f);
+    float num = max(c - 0.8359375f, 0.0f);
+    float den = max(1e-6f, 18.8515625f - 18.6875f * c);
+    return pow(num / den, 1.0f / 0.1593017578f);
+}
+
 float LinearToRec709_Scalar(float L)
 {
     L = saturate(L);
@@ -80,6 +113,57 @@ float LinearToSRGB_Scalar(float L)
 float3 LinearToSRGB(float3 rgb)
 {
     return float3(LinearToSRGB_Scalar(rgb.r), LinearToSRGB_Scalar(rgb.g), LinearToSRGB_Scalar(rgb.b));
+}
+
+float3 ToneMap_BT2390(float3 linearScrgb, float sourcePeak, float sdrWhite, float rollOff)
+{
+    float3 rgb10k = max(0.0f, linearScrgb) * (80.0f / 10000.0f);
+    float3 rgb2020 = max(0.0f, rec709_to_rec2020(rgb10k));
+
+    float Lw = max(sdrWhite + 10.0f, sourcePeak);
+    float Lmax = max(10.0f, sdrWhite);
+
+    float Lw_pq = linear_to_st2084_channel(Lw / 10000.0f);
+    float Lmax_pq = linear_to_st2084_channel(Lmax / 10000.0f);
+
+    float maxRGB1_linear = max(rgb2020.r, max(rgb2020.g, rgb2020.b));
+    float maxRGB1_pq = linear_to_st2084_channel(maxRGB1_linear);
+
+    float E1 = saturate(maxRGB1_pq / max(1e-6f, Lw_pq));
+    float maxLum = Lmax_pq / max(1e-6f, Lw_pq);
+    float KS = clamp(((1.5f * maxLum) - 0.5f) * rollOff, 0.0f, 0.99f);
+
+    if (E1 <= KS)
+    {
+        return saturate(linearScrgb * (80.0f / Lmax));
+    }
+
+    float T = (E1 - KS) / max(1e-6f, 1.0f - KS);
+    float Tsquared = T * T;
+    float Tcubed = Tsquared * T;
+    float P = (2.0f * Tcubed - 3.0f * Tsquared + 1.0f) * KS
+            + (Tcubed - 2.0f * Tsquared + T) * (1.0f - KS)
+            + (-2.0f * Tcubed + 3.0f * Tsquared) * maxLum;
+
+    float maxRGB2_pq = P * Lw_pq;
+    float maxRGB2_linear = st2084_to_linear_channel(maxRGB2_pq);
+
+    float scale = maxRGB2_linear / max(6.10352e-5f, maxRGB1_linear);
+    float3 mapped2020 = rgb2020 * scale;
+    float3 mapped709 = rec2020_to_rec709(mapped2020);
+    return saturate(mapped709 * (10000.0f / Lmax));
+}
+
+float3 ToneMap_OBS_Reinhard(float3 linearScrgb, float sdrWhite)
+{
+    float safeSdrWhite = max(10.0f, sdrWhite);
+    float multiplier = 80.0f / safeSdrWhite;
+    float3 normRgb = max(0.0f, linearScrgb) * multiplier;
+
+    float3 rgb2020 = max(0.0f, rec709_to_rec2020(normRgb));
+    float3 mapped2020 = rgb2020 / (rgb2020 + 1.0f);
+    float3 mapped709 = rec2020_to_rec709(mapped2020);
+    return saturate(mapped709 * 2.0f);
 }
 
 float3 HableCurve(float3 x)
@@ -143,9 +227,11 @@ float4 ToneMapPS(VSOutput input) : SV_Target
     case 1: mappedRgb = ToneMap_Reinhard(normRgb, peakScale, highlightRollOff); break;
     case 2: mappedRgb = ToneMap_Hable(normRgb, peakScale); break;
     case 3: mappedRgb = ToneMap_ACES(normRgb); break;
-    case 4:
+    case 4: mappedRgb = ToneMap_LumaHuePreserving(normRgb, peakScale, highlightRollOff); break;
+    case 6: mappedRgb = ToneMap_OBS_Reinhard(linearRgb, safeSdrWhite); break;
+    case 5:
     default:
-        mappedRgb = ToneMap_LumaHuePreserving(normRgb, peakScale, highlightRollOff);
+        mappedRgb = ToneMap_BT2390(linearRgb, sourcePeakNits, safeSdrWhite, highlightRollOff);
         break;
     }
     mappedRgb = saturate(mappedRgb);
@@ -153,6 +239,7 @@ float4 ToneMapPS(VSOutput input) : SV_Target
     float3 finalSdr;
     if (oetfType == 0) finalSdr = LinearToRec709(mappedRgb);
     else if (oetfType == 1) finalSdr = LinearToSRGB(mappedRgb);
+    else if (oetfType == 3) finalSdr = pow(mappedRgb, 1.0f / 2.4f);
     else finalSdr = mappedRgb;
 
     return float4(finalSdr, raw.a);
@@ -224,11 +311,13 @@ bool ToneMapCore::Initialize(ID3D11Device* device, const std::wstring& shaderPat
 
     // 3. 创建管线状态对象
     if (!CreatePipelineStates(m_device.Get())) {
+        BRIDGE_LOG("ToneMap", "CreatePipelineStates failed!");
         return false;
     }
 
     m_initialized = true;
     m_paramsDirty = true;
+    BRIDGE_LOG("ToneMap", "ToneMapCore::Initialize SUCCESS on device=%p", m_device.Get());
     return true;
 }
 
@@ -294,6 +383,92 @@ bool ToneMapCore::UpdateConstantBuffer(ID3D11DeviceContext* context)
     return true;
 }
 
+D3D11StateGuard::D3D11StateGuard(ID3D11DeviceContext* context)
+    : m_context(context)
+{
+    if (!m_context) return;
+
+    // 1. 保存 Viewports
+    m_numSavedViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    m_context->RSGetViewports(&m_numSavedViewports, m_savedViewports);
+
+    // 2. 保存 IA 状态
+    m_context->IAGetInputLayout(m_savedInputLayout.GetAddressOf());
+    m_context->IAGetPrimitiveTopology(&m_savedTopology);
+
+    // 3. 保存 VS / PS
+    m_context->VSGetShader(m_savedVS.GetAddressOf(), nullptr, nullptr);
+    m_context->PSGetShader(m_savedPS.GetAddressOf(), nullptr, nullptr);
+
+    // 4. 保存 PS 阶段资源与采样器 (Slot 0)
+    m_context->PSGetConstantBuffers(0, 1, m_savedPSCB.GetAddressOf());
+    m_context->PSGetShaderResources(0, 1, m_savedPSSRV.GetAddressOf());
+    m_context->PSGetSamplers(0, 1, m_savedPSSampler.GetAddressOf());
+
+    // 5. 保存 RS 状态
+    m_context->RSGetState(m_savedRasterizerState.GetAddressOf());
+
+    // 6. 保存 Blend 状态
+    m_context->OMGetBlendState(m_savedBlendState.GetAddressOf(), m_savedBlendFactor, &m_savedSampleMask);
+
+    // 7. 保存 Render Targets 与 DSV
+    ID3D11RenderTargetView* rawRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+    ID3D11DepthStencilView* rawDSV = nullptr;
+    m_context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rawRTVs, &rawDSV);
+    for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+        m_savedRTVs[i].Attach(rawRTVs[i]);
+    }
+    m_savedDSV.Attach(rawDSV);
+}
+
+D3D11StateGuard::~D3D11StateGuard()
+{
+    if (!m_context) return;
+
+    // 关键：先解绑当前着色器绑定的临时 SRV 和 RTV，杜绝与后续管线产生资源 Hazard
+    ID3D11ShaderResourceView* nullSRVs[] = { nullptr };
+    m_context->PSSetShaderResources(0, 1, nullSRVs);
+
+    ID3D11RenderTargetView* nullRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{ nullptr };
+    m_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, nullRTVs, nullptr);
+
+    // 1. 恢复 Viewports
+    if (m_numSavedViewports > 0) {
+        m_context->RSSetViewports(m_numSavedViewports, m_savedViewports);
+    }
+
+    // 2. 恢复 IA 状态
+    m_context->IASetInputLayout(m_savedInputLayout.Get());
+    m_context->IASetPrimitiveTopology(m_savedTopology);
+
+    // 3. 恢复 VS / PS
+    m_context->VSSetShader(m_savedVS.Get(), nullptr, 0);
+    m_context->PSSetShader(m_savedPS.Get(), nullptr, 0);
+
+    // 4. 恢复 PS 阶段资源与采样器 (Slot 0)
+    ID3D11Buffer* pcb = m_savedPSCB.Get();
+    m_context->PSSetConstantBuffers(0, 1, &pcb);
+
+    ID3D11ShaderResourceView* psrv = m_savedPSSRV.Get();
+    m_context->PSSetShaderResources(0, 1, &psrv);
+
+    ID3D11SamplerState* psamp = m_savedPSSampler.Get();
+    m_context->PSSetSamplers(0, 1, &psamp);
+
+    // 5. 恢复 RS 状态
+    m_context->RSSetState(m_savedRasterizerState.Get());
+
+    // 6. 恢复 Blend 状态
+    m_context->OMSetBlendState(m_savedBlendState.Get(), m_savedBlendFactor, m_savedSampleMask);
+
+    // 7. 恢复 Render Targets 与 DSV
+    ID3D11RenderTargetView* rawRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+    for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+        rawRTVs[i] = m_savedRTVs[i].Get();
+    }
+    m_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rawRTVs, m_savedDSV.Get());
+}
+
 bool ToneMapCore::Execute(ID3D11DeviceContext* context,
                           ID3D11ShaderResourceView* inputSRV,
                           ID3D11RenderTargetView* outputRTV,
@@ -301,6 +476,9 @@ bool ToneMapCore::Execute(ID3D11DeviceContext* context,
                           UINT height)
 {
     if (!m_initialized || !context || !inputSRV || !outputRTV) return false;
+
+    // RAII 状态隔离守卫：保存宿主管线状态，并在函数返回时 100% 还原
+    D3D11StateGuard stateGuard(context);
 
     if (!UpdateConstantBuffer(context)) return false;
 
@@ -339,21 +517,22 @@ bool ToneMapCore::Execute(ID3D11DeviceContext* context,
     // 触发全屏绘制 (3 顶点覆盖屏幕)
     context->Draw(3, 0);
 
-    // 绘制完成后解绑，防止后续管道 Hazard
-    ID3D11ShaderResourceView* nullSRVs[] = { nullptr };
-    context->PSSetShaderResources(0, 1, nullSRVs);
-
-    ID3D11RenderTargetView* nullRTVs[] = { nullptr };
-    context->OMSetRenderTargets(1, nullRTVs, nullptr);
-
     return true;
 }
+
 
 bool ToneMapCore::Execute(ID3D11DeviceContext* context,
                           ID3D11Texture2D* inputTexture,
                           ID3D11Texture2D* outputTexture)
 {
-    if (!m_initialized || !context || !inputTexture || !outputTexture) return false;
+    if (!m_initialized) {
+        BRIDGE_LOG("ToneMap", "Execute failed: ToneMapCore not initialized!");
+        return false;
+    }
+    if (!context || !inputTexture || !outputTexture) {
+        BRIDGE_LOG("ToneMap", "Execute failed: null argument (ctx=%p, in=%p, out=%p)", context, inputTexture, outputTexture);
+        return false;
+    }
 
     D3D11_TEXTURE2D_DESC inDesc{};
     inputTexture->GetDesc(&inDesc);
@@ -363,11 +542,25 @@ bool ToneMapCore::Execute(ID3D11DeviceContext* context,
 
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     HRESULT hr = m_device->CreateShaderResourceView(inputTexture, nullptr, srv.GetAddressOf());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        static int s_srvFail = 0;
+        if (++s_srvFail <= 5) {
+            BRIDGE_LOG("ToneMap", "CreateShaderResourceView failed: hr=0x%08lX (fmt=%d bind=0x%X misc=0x%X)",
+                       hr, static_cast<int>(inDesc.Format), inDesc.BindFlags, inDesc.MiscFlags);
+        }
+        return false;
+    }
 
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
     hr = m_device->CreateRenderTargetView(outputTexture, nullptr, rtv.GetAddressOf());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        static int s_rtvFail = 0;
+        if (++s_rtvFail <= 5) {
+            BRIDGE_LOG("ToneMap", "CreateRenderTargetView failed: hr=0x%08lX (fmt=%d bind=0x%X misc=0x%X)",
+                       hr, static_cast<int>(outDesc.Format), outDesc.BindFlags, outDesc.MiscFlags);
+        }
+        return false;
+    }
 
     return Execute(context, srv.Get(), rtv.Get(), outDesc.Width, outDesc.Height);
 }

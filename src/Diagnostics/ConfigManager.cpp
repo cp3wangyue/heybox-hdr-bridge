@@ -98,7 +98,7 @@ bool ConfigManager::Load(const std::wstring& iniPath)
     m_config.general.enable = ReadIniBool(L"General", L"Enable", true, resolved);
     m_config.general.failOpen = ReadIniBool(L"General", L"FailOpen", true, resolved);
     m_config.general.input = ToString(ReadIniString(L"General", L"Input", L"Auto", resolved));
-    m_config.general.output = ToString(ReadIniString(L"General", L"Output", L"Rec709", resolved));
+    m_config.general.output = ToString(ReadIniString(L"General", L"Output", L"sRGB", resolved));
     m_config.general.debugOverlay = ReadIniBool(L"General", L"DebugOverlay", false, resolved);
     m_config.general.logLevel = ToString(ReadIniString(L"General", L"LogLevel", L"info", resolved));
 
@@ -110,10 +110,12 @@ bool ConfigManager::Load(const std::wstring& iniPath)
     m_config.hdr.highlightRollOff = ReadIniFloat(L"HDR", L"HighlightRollOff", 1.0f, resolved);
 
     // [Compatibility]
-    m_config.compat.strictVersionCheck = ReadIniBool(L"Compatibility", L"StrictVersionCheck", true, resolved);
-    m_config.compat.allowUnknownBuild = ReadIniBool(L"Compatibility", L"AllowUnknownBuild", false, resolved);
+    m_config.compat.strictVersionCheck = ReadIniBool(L"Compatibility", L"StrictVersionCheck", false, resolved);
+    m_config.compat.allowUntestedCompatible = ReadIniBool(L"Compatibility", L"AllowUntestedCompatible", true, resolved);
+    m_config.compat.allowUnknownBuild = ReadIniBool(L"Compatibility", L"AllowUnknownBuild", true, resolved);
 
     return true;
 }
+
 
 } // namespace hdrfix

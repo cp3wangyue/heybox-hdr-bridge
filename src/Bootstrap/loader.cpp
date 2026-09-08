@@ -13,9 +13,12 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <wrl/client.h>
 
 #include <cstdio>
+#include <io.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -91,6 +94,7 @@ bool CreateShortcut(const std::wstring& shortcutPath, const std::wstring& target
     shellLink->SetArguments(arguments.c_str());
     shellLink->SetDescription(description.c_str());
     shellLink->SetWorkingDirectory(fs::path(targetExe).parent_path().c_str());
+    shellLink->SetShowCmd(SW_HIDE);
 
     if (!iconPath.empty()) {
         shellLink->SetIconLocation(iconPath.c_str(), 0);
@@ -151,6 +155,35 @@ bool IsDllLoaded(DWORD pid, const std::wstring& dllName)
     return found;
 }
 
+void LogLoader(const char* fmt, ...)
+{
+    wchar_t tempDir[MAX_PATH]{};
+    ::GetTempPathW(MAX_PATH, tempDir);
+    std::wstring logPath = std::wstring(tempDir) + L"hdrfix_loader.log";
+
+    SYSTEMTIME st{};
+    ::GetLocalTime(&st);
+
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    char line[1200];
+    int len = snprintf(line, sizeof(line), "[%02u:%02u:%02u.%03u] [PID:%5lu] %s\r\n",
+                       st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                       ::GetCurrentProcessId(), buf);
+
+    ::OutputDebugStringA(line);
+
+    FILE* fp = _wfopen(logPath.c_str(), L"a");
+    if (fp) {
+        fwrite(line, 1, len, fp);
+        fclose(fp);
+    }
+}
+
 bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
 {
     if (IsDllLoaded(pid, L"hdrfix.dll")) {
@@ -160,16 +193,21 @@ bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
     HANDLE hProc = ::OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
                                  PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
                                  FALSE, pid);
-    if (!hProc) return false;
+    if (!hProc) {
+        LogLoader("InjectDll: OpenProcess(PID %lu) failed err=%lu", pid, ::GetLastError());
+        return false;
+    }
 
     size_t sizeBytes = (dllFullPath.length() + 1) * sizeof(wchar_t);
     LPVOID remoteMem = ::VirtualAllocEx(hProc, nullptr, sizeBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remoteMem) {
+        LogLoader("InjectDll: VirtualAllocEx(PID %lu) failed err=%lu", pid, ::GetLastError());
         ::CloseHandle(hProc);
         return false;
     }
 
     if (!::WriteProcessMemory(hProc, remoteMem, dllFullPath.c_str(), sizeBytes, nullptr)) {
+        LogLoader("InjectDll: WriteProcessMemory(PID %lu) failed err=%lu", pid, ::GetLastError());
         ::VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
         ::CloseHandle(hProc);
         return false;
@@ -185,6 +223,7 @@ bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
 
     HANDLE hThread = ::CreateRemoteThread(hProc, nullptr, 0, pLoadLib, remoteMem, 0, nullptr);
     if (!hThread) {
+        LogLoader("InjectDll: CreateRemoteThread(PID %lu) failed err=%lu", pid, ::GetLastError());
         ::VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
         ::CloseHandle(hProc);
         return false;
@@ -194,12 +233,17 @@ bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
     DWORD exitCode = 0;
     if (waitResult == WAIT_OBJECT_0) {
         ::GetExitCodeThread(hThread, &exitCode);
+    } else {
+        LogLoader("InjectDll: WaitForSingleObject(PID %lu) timed out/failed (result=%lu)", pid, waitResult);
     }
 
     ::CloseHandle(hThread);
     ::VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
     ::CloseHandle(hProc);
-    return waitResult == WAIT_OBJECT_0 && exitCode != 0;
+
+    bool ok = (waitResult == WAIT_OBJECT_0 && exitCode != 0);
+    LogLoader("InjectDll: PID %lu LoadLibrary result: exitCode=0x%08lX -> %s", pid, exitCode, ok ? "SUCCESS" : "FAIL");
+    return ok;
 }
 
 int InjectAllRunningProcesses(const std::wstring& dllPath, bool verbose)
@@ -239,12 +283,17 @@ bool StartHeybox()
 
 int RunSessionCompanion(bool launchIfNeeded)
 {
+    LogLoader("=== RunSessionCompanion started (launchIfNeeded=%d) ===", launchIfNeeded ? 1 : 0);
+
     HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, kSessionMutexName);
-    if (!hMutex) return 1;
+    if (!hMutex) {
+        LogLoader("Failed to create session mutex: err=%lu", ::GetLastError());
+        return 1;
+    }
 
     if (::GetLastError() == ERROR_ALREADY_EXISTS) {
         ::CloseHandle(hMutex);
-        // 已有本次小黑盒会话伴随器，不再启动第二个。
+        LogLoader("Session companion already running. Exiting redundant instance.");
         if (launchIfNeeded && FindHeyboxPids().empty()) {
             StartHeybox();
         }
@@ -252,11 +301,14 @@ int RunSessionCompanion(bool launchIfNeeded)
     }
 
     if (launchIfNeeded && FindHeyboxPids().empty()) {
+        LogLoader("Heybox not running. Calling StartHeybox()...");
         if (!StartHeybox()) {
+            LogLoader("StartHeybox() failed!");
             ::ReleaseMutex(hMutex);
             ::CloseHandle(hMutex);
             return 1;
         }
+        LogLoader("StartHeybox() succeeded.");
     }
 
     // --launch 通常由桌面快捷方式调用，伴随器整个会话静默运行。
@@ -266,13 +318,16 @@ int RunSessionCompanion(bool launchIfNeeded)
 
     std::wstring dllPath = (fs::path(GetSelfDirectory()) / L"hdrfix.dll").wstring();
     if (!fs::exists(dllPath)) {
+        LogLoader("hdrfix.dll not found at: %ls", dllPath.c_str());
         ::ReleaseMutex(hMutex);
         ::CloseHandle(hMutex);
         return 1;
     }
+    LogLoader("Target DLL path: %ls", dllPath.c_str());
 
     HANDLE hStop = ::CreateEventW(nullptr, TRUE, FALSE, kSessionStopEventName);
     if (!hStop) {
+        LogLoader("Failed to create stop event: err=%lu", ::GetLastError());
         ::ReleaseMutex(hMutex);
         ::CloseHandle(hMutex);
         return 1;
@@ -282,6 +337,9 @@ int RunSessionCompanion(bool launchIfNeeded)
     bool sawHeybox = false;
     int emptySeconds = 0;
     int startupSeconds = 0;
+    int heartbeatSeconds = 0;
+
+    LogLoader("Entering companion monitoring loop...");
 
     while (::WaitForSingleObject(hStop, 0) != WAIT_OBJECT_0) {
         auto pids = FindHeyboxPids();
@@ -290,23 +348,36 @@ int RunSessionCompanion(bool launchIfNeeded)
             emptySeconds = 0;
             for (DWORD pid : pids) {
                 if (!IsDllLoaded(pid, L"hdrfix.dll")) {
-                    InjectDll(pid, dllPath);
+                    bool ok = InjectDll(pid, dllPath);
+                    LogLoader("Injected into PID %lu -> %s", pid, ok ? "OK" : "FAIL");
                 }
             }
         } else if (sawHeybox) {
-            // Electron 退出时多个进程不是同时消失，留 5 秒宽限期。
-            if (++emptySeconds >= 5) break;
-        } else if (++startupSeconds >= 20) {
-            // 启动失败或客户端未出现，避免伴随器无期限空转。
+            // Electron 退出时多个进程不是同时消失，留 20 秒宽限期。
+            if (++emptySeconds >= 20) {
+                LogLoader("Heybox processes disappeared for 20 seconds. Companion exiting.");
+                break;
+            }
+        } else if (++startupSeconds >= 60) {
+            LogLoader("Heybox failed to start within 60 seconds. Companion exiting.");
             break;
         }
 
-        if (::WaitForSingleObject(hStop, 1000) == WAIT_OBJECT_0) break;
+        if (++heartbeatSeconds >= 10) {
+            heartbeatSeconds = 0;
+            LogLoader("Heartbeat: sawHeybox=%d, activePids=%zu", sawHeybox ? 1 : 0, pids.size());
+        }
+
+        if (::WaitForSingleObject(hStop, 1000) == WAIT_OBJECT_0) {
+            LogLoader("Stop event signaled. Companion exiting.");
+            break;
+        }
     }
 
     ::CloseHandle(hStop);
     ::ReleaseMutex(hMutex);
     ::CloseHandle(hMutex);
+    LogLoader("=== Companion exited cleanly ===");
     return 0;
 }
 
@@ -461,20 +532,75 @@ int DoStatus()
 
 } // namespace
 
-int main(int argc, char** argv)
+int RunLoader(int argc, wchar_t** argv)
 {
-    ::SetConsoleOutputCP(65001);
-    ::SetConsoleCP(65001);
+    bool isConsoleCommand = false;
+    if (argc > 1) {
+        std::wstring a = argv[1];
+        if (a == L"--status" || a == L"-s" ||
+            a == L"--install" || a == L"-i" ||
+            a == L"--uninstall" || a == L"-u" ||
+            a == L"--inject" ||
+            a == L"--help" || a == L"-h") {
+            isConsoleCommand = true;
+        }
+    }
+
+    if (isConsoleCommand) {
+        HANDLE hStdOut = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hStdOut && hStdOut != INVALID_HANDLE_VALUE && ::GetFileType(hStdOut) != FILE_TYPE_UNKNOWN) {
+            int fd = _open_osfhandle(reinterpret_cast<intptr_t>(hStdOut), _O_TEXT);
+            if (fd >= 0) {
+                FILE* fp = _fdopen(fd, "w");
+                if (fp) {
+                    *stdout = *fp;
+                    setvbuf(stdout, nullptr, _IONBF, 0);
+                }
+            }
+        } else if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
+            FILE* fp;
+            freopen_s(&fp, "CONOUT$", "w", stdout);
+            freopen_s(&fp, "CONOUT$", "w", stderr);
+            freopen_s(&fp, "CONIN$", "r", stdin);
+        }
+        ::SetConsoleOutputCP(65001);
+        ::SetConsoleCP(65001);
+    }
+
+    std::string argStr;
+    for (int i = 1; i < argc; ++i) {
+        if (!argStr.empty()) argStr += " ";
+        argStr += ToUtf8(argv[i]);
+    }
+    LogLoader("hdrfix_loader main invoked with args: '%s'", argStr.c_str());
 
     if (argc > 1) {
-        std::string arg = argv[1];
-        if (arg == "--install" || arg == "-i") return DoInstall();
-        if (arg == "--uninstall" || arg == "-u") return DoUninstall();
-        if (arg == "--launch" || arg == "-l") return DoLaunch();
-        if (arg == "--inject") return DoInject();
-        if (arg == "--status" || arg == "-s") return DoStatus();
+        std::wstring arg = argv[1];
+        if (arg == L"--install" || arg == L"-i") return DoInstall();
+        if (arg == L"--uninstall" || arg == L"-u") return DoUninstall();
+        if (arg == L"--launch" || arg == L"-l") return DoLaunch();
+        if (arg == L"--inject") return DoInject();
+        if (arg == L"--status" || arg == L"-s") return DoStatus();
     }
 
     // 默认双击即“启动小黑盒 + 本次会话伴随”，不再隐式安装或启动全局守护。
     return DoLaunch();
+}
+
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
+{
+    int argc = 0;
+    wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    int res = RunLoader(argc, argv);
+    if (argv) ::LocalFree(argv);
+    return res;
+}
+
+int main(int, char**)
+{
+    int argc = 0;
+    wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    int res = RunLoader(argc, argv);
+    if (argv) ::LocalFree(argv);
+    return res;
 }

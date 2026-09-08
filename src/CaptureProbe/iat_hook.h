@@ -1,5 +1,5 @@
 #pragma once
-// CaptureProbe/iat_hook.h — 最小 IAT Hook（计划书 §2.3 最小侵入：只改目标模块自己的导入表）
+// CaptureProbe/iat_hook.h — 最小 IAT Hook（只改目标模块自己的导入表）
 
 #include <windows.h>
 #include <string>

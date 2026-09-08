@@ -20,9 +20,9 @@ HEYBOX 请求 WGC BGRA8 帧池
         ↓
 Windows HDR 开启时提升为 FP16 scRGB
         ↓
-D3D11 GPU Tone Mapping
+D3D11 GPU Tone Mapping (ITU-R BT.2390 EETF)
         ↓
-Rec.709 / BGRA8 SDR
+sRGB / Rec.709 (BGRA8 SDR)
         ↓
 代理帧返回给小黑盒原有编码链
 ```
@@ -31,17 +31,18 @@ HDR 关闭、格式未知或安全检查失败时，目标是直接走原生帧�
 
 ## 当前状态
 
-当前代码已经具备 WGC 帧池代理、scRGB → SDR GPU 色调映射、配置读取、旁路/熔断以及加载器等主要模块，但仍处于 **Experimental** 阶段，不建议把“在一台机器上验证通过”理解为对所有客户端版本、GPU 和 Windows 构建都已稳定支持。
+当前代码已经具备 WGC 帧池代理、基于 ITU-R BT.2390 的 scRGB → SDR GPU 色调映射、配置读取、安全熔断守卫以及会话级伴随加载器等核心模块。
 
-目前仓库中的兼容信息对应：
+目前仓库中的兼容与色彩信息对应：
 
 | 项目 | 已验证环境 |
 | --- | --- |
 | 小黑盒客户端 | HeyboxChat 1.56.0 |
 | RTC 模块 | VolcEngineRTC.dll 3.58.1.63260 |
 | 捕获路径 | Windows Graphics Capture / D3D11 |
-| HDR 输入 | FP16 scRGB |
-| SDR 输出 | Rec.709 / BGRA8 |
+| HDR 输入 | FP16 scRGB (80~10000 nits) |
+| SDR 输出 | sRGB / Rec.709 (BGRA8) |
+| 色调映射 | ITU-R BT.2390 EETF (Hermite 样条 / Rec.2020 宽色域中转 / 对标 OBS Studio 28+) |
 | 10-bit PQ 输入 | 目前仅诊断，不主动转换 |
 
 ## 使用方式
@@ -125,30 +126,57 @@ dist/uninstall.bat
 Enable=true
 FailOpen=true
 Input=Auto
-Output=Rec709
+Output=sRGB
 
 [HDR]
-ToneMapper=Auto
+ToneMapper=BT2390
 SourcePeakNits=Auto
 SDRReferenceWhite=System
 Exposure=0.0
 HighlightRollOff=1.0
 
 [Compatibility]
-StrictVersionCheck=true
-AllowUnknownBuild=false
+# 四级版本兼容体系策略：
+# Verified: compat.json 官方验证版本，完全信任
+# UntestedCompatible: 未知版本但在运行时通过能力检测 (WGC/RTC/PixelFormat/FP16)
+# Incompatible / DiagnoseOnly: 关键接口缺失或结构异常，强制 Fail-open 原生透传
+AllowUntestedCompatible=true
+StrictVersionCheck=false
+AllowUnknownBuild=true
 ```
 
-当前可用的 Tone Mapper 包括 `LumaHuePreserving`、`ACES`、`Hable`、`Reinhard` 和 `Clamp`。`Auto` 当前会回落到默认的亮度/色相保持路径。
+- **Output**：支持 `sRGB`（默认推荐，对标 OBS Studio 28+，暗部扎实色彩通透）、`Rec709`（传统广播曲线）、`Gamma24` 与 `Linear`。
+- **ToneMapper**：支持 `BT2390`（默认推荐，国际广播标准 ITU-R BT.2390 EETF，基于 Rec.2020 宽色域中转与 Hermite 三次样条，实现 1:1 SDR 无损透传与自然高光压缩）、`OBSReinhard`（OBS 宽色域 Reinhard）、`ExtendedReinhard`、`Hable`、`ACES`、`LumaHuePreserving` 与 `Clamp`。`Auto` 默认启用 `BT2390`。
 
-## 关于版本兼容
+## 关于版本兼容体系
 
-“版本锁”不应该被理解成“只要小黑盒更新，补丁必然失效”。真正合理的设计应分成两层：
+本项目采用**四级动态兼容模型**与**能力检测优先**策略，拒绝“版本号一变就机械判死”的死版本锁：
 
-1. **能力检测**：先判断目标进程是否仍使用 WGC、目标 FramePool 接口是否存在、请求格式和 RTC 捕获路径是否仍符合预期；这些条件没变时，新版本有机会继续工作。
-2. **已验证版本记录**：`compat.json` 记录我们实际测试过的客户端/RTC 版本。未知版本可进入“兼容性未验证”状态，而不是仅凭版本号机械判死刑。
+1. **Verified（已验证）**：
+   - 客户端与 RTC 模块版本完全命中 `config/compat.json` 官方验证白名单，直接启用 HDR 桥接。
+2. **UntestedCompatible（未测兼容）**：
+   - 客户端或 RTC 发生小版本更新，但在运行时通过全部关键能力检测：
+     - `VolcEngineRTC.dll` 模块已加载；
+     - WGC `Direct3D11CaptureFramePool` 工厂可用；
+     - 请求的捕获格式受支持（如 BGRA8）；
+     - GPU 支持创建 FP16 纹理与 RTV 渲染目标；
+   - 此时自动评定为 `UntestedCompatible` 并启用 HDR 桥接，保证客户端平滑更新可用。
+3. **Incompatible（不兼容）**：
+   - 必需接口缺失、格式不支持或链路结构发生重大不兼容断裂，强制 **Fail-open**，走原生透传帧，杜绝黑屏崩溃。
+4. **DiagnoseOnly（仅诊断降级）**：
+   - 检测到异常、上次未清理的 Crash Marker 或手动热旁路，仅记录诊断日志，不介入修改任何帧。
 
-当前代码里的 `StrictVersionCheck` 仍是一个未完成项：它还没有真正解析 `compat.json` 并校验文件版本/哈希，所以现阶段不能把它视作完整的版本兼容系统。
+运行时会输出清晰的标准诊断块，例如：
+
+```text
+Compatibility:
+  HeyboxChat: 1.56.0 [VERIFIED]
+  VolcEngineRTC: 3.58.1.63260 [VERIFIED]
+  WGC FramePool: compatible
+  Requested format: BGRA8
+  Decision: Verified
+  Action: HDR bridge enabled
+```
 
 ## 从源码构建
 
@@ -190,17 +218,14 @@ shaders/           HLSL 参考实现
 tools/             捕获、HDR 状态与诊断工具
 tests/             Tone Mapping 独立测试台
 config/            默认配置
-dist/              当前便携测试包
+dist/              当前便携发布包
 ```
 
 ## 已知限制
 
-- `compat.json` 尚未真正接入运行时版本/哈希校验；当前版本兼容系统仍需完善。
-- 当前 x64 inline hook 为自研轻量实现，尚未完整处理被搬移指令中的 RIP-relative 寻址和相对跳转，客户端/系统 DLL 更新后存在兼容风险。
-- DLL 的重初始化工作已经移出 `DllMain`，但 Hook 本身的生命周期与卸载并发仍需要继续做压力测试。
-- Tone Mapping 使用宿主 D3D11 immediate context，并会修改渲染管线状态；后续需要做完整状态保存/恢复或隔离上下文。
 - 目前主要验证的是 FP16 scRGB 路径，R10G10B10A2 / PQ 仍是诊断模式。
-- 当前没有 CI、自动化 Release、签名和跨版本回归矩阵。
+- 当前尚未配置远端 CI 自动化流水线与代码签名证书。
+
 
 ## 开发原则
 

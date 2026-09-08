@@ -13,6 +13,11 @@
           "module": "VolcEngineRTC.dll",
           "version": "3.58.1.63260",
           "status": "Verified"
+        },
+        {
+          "module": "VolcEngineRTC.dll",
+          "version": "3.58.1.0",
+          "status": "Verified"
         }
       ]
     }

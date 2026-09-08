@@ -1,6 +1,4 @@
-// rgb_to_nv12.hlsl — Rec.709 RGB → NV12（Limited Range）转换（P4/P5，计划书 §8.5 / §9.1）
-//
-// 状态：PASSTHROUGH 占位。Gate P2 未通过前不实现、不调参。
+// rgb_to_nv12.hlsl — Rec.709 RGB → NV12（Limited Range）转换参考实现
 //
 // 实现要点（P4/P5 时展开）：
 //  * 优先评估 D3D11 Video Processor 是否满足需求（驱动路径，代价最低）；

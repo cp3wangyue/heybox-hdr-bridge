@@ -1,5 +1,5 @@
 #pragma once
-// Diagnostics/SafetyGuard.h — 四重故障保护核心（计划书 §10.3 / §12.1）
+// Diagnostics/SafetyGuard.h — 四重故障保护核心
 //
 // 负责实现：
 //   1. Kill Switch（配置文件、命名事件 Local\hdrfix_kill、环境变量 HDRFIX_DISABLE）；
@@ -56,6 +56,8 @@ private:
     std::atomic<bool> m_initialized{false};
     std::atomic<bool> m_manualBypass{false};
     std::atomic<bool> m_safeFallbackMode{false}; // 崩溃降级模式
+    std::atomic<bool> m_versionChecked{false};
+    std::atomic<bool> m_versionPassed{false};
     SafetyStatus m_lastStatus = SafetyStatus::Safe;
     std::wstring m_markerPath;
 };

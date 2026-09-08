@@ -1,4 +1,4 @@
-// injector — 本地研究加载器（计划书 §12.1：仅本地加载；不做持久化、不做隐藏）
+// injector — 本地研究加载器（仅本地加载；不做持久化、不做隐藏）
 //
 // 用法:
 //   injector.exe [--name HeyboxChat.exe] [--module VolcEngineRTC.dll] [--dll <路径>]   注入

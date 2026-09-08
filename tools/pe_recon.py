@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# pe_recon.py — P1 静态侦察：对客户端二进制做导入表与字符串检索（计划书 §5.2，只读）
+# pe_recon.py — 静态侦察：对客户端二进制做导入表与字符串检索（只读）
 # 用法: python pe_recon.py <客户端根目录> <输出md>
 # 输出: 候选捕获 API / 编码器 / 像素格式 / 色彩关键词的命中表（每条带证据来源）
 
@@ -10,7 +10,7 @@ import datetime
 
 import pefile
 
-# 检索目标（§5.2 表 + Electron/RTC 场景补充）
+# 检索目标（Electron/RTC 场景补充）
 IMPORT_HINTS = {
     "捕获/D3D11 初始化": [
         "CreateDXGIFactory", "D3D11CreateDevice", "DuplicateOutput",
@@ -115,7 +115,7 @@ def main():
     binaries.sort(key=lambda p: -os.path.getsize(p))
     print(f"scanning {len(binaries)} binaries under {root}")
 
-    lines = [f"# PE 静态侦察（P1，§5.2）", "",
+    lines = [f"# PE 静态侦察", "",
              f"- 采集时间：{datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
              f"- 目标目录：`{root}`",
              f"- 二进制数量：{len(binaries)}（深度扫描命中如下）", ""]

@@ -1,5 +1,5 @@
 #pragma once
-// Integration/WgcHookManager.h — WGC 帧池拦截管理器（计划书 §9.1 / §9.2）
+// Integration/WgcHookManager.h — WGC 帧池拦截管理器
 //
 // 负责拦截 RoGetActivationFactory 并将 Direct3D11CaptureFramePool 工厂重定向至 ProxyFramePoolStatics
 

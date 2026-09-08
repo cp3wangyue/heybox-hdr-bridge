@@ -1,4 +1,4 @@
-﻿# module_diff.ps1 — P1 进程模块清单快照与 diff（计划书 §5.1）
+# module_diff.ps1 — 进程模块清单快照与 diff
 # 共享前抓一次 idle，共享中抓一次 sharing，再 diff 出新增/消失的模块。
 # 支持多进程客户端（Electron 等）：快照覆盖所有同名进程，每行带 Pid。
 # 用法：
@@ -19,7 +19,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $SnapDir = Join-Path $RepoRoot 'docs\recon\module-snapshots'
 if (-not (Test-Path $SnapDir)) { New-Item -ItemType Directory -Path $SnapDir -Force | Out-Null }
 
-# 与捕获/编码/色彩相关的候选关键词（§5.1/§5.2 + RTC SDK 场景）
+# 与捕获/编码/色彩相关的候选关键词（RTC SDK 场景）
 $CandidateRegex = 'dxgi|d3d11|d3d9|dcomp|capture|mfplat|mfreadwrite|mf\.dll|mfh264|mfvdec|mfhevc|nvencode|nvml|avcodec|avutil|avformat|swscale|ffmpeg|webrtc|libyuv|obs|x264|openh264|nv12|i420|dxva|dwm|color|volcengine|vertc|bytertc|liteav|rtc|live_kit|overlay|liteav_screen'
 
 function Get-TargetProcesses {

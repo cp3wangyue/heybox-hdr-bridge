@@ -1,4 +1,4 @@
-// capture_format_spy — 只读系统级捕获格式探测（P0/P2 证据工具，计划书附录 D 第 4/5 步）
+// capture_format_spy — 只读系统级捕获格式探测工具
 //
 // 目的：在不接触小黑盒进程的前提下，回答"HDR 开/关时系统捕获 API 给出的纹理格式是什么"：
 //   1. DXGI Desktop Duplication：输出当前颜色空间/HDR 状态、复制表面格式；

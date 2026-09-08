@@ -1,7 +1,7 @@
-// probe_testhost — 探针管线与集成测试宿主（计划书 §9 / §11）
+// probe_testhost — 探针管线与集成测试宿主
 //
 // 模式：
-//   probe_testhost.exe --integration       【P5 核心验证】测试 WgcHookManager 帧池拦截、FP16 升级与 ToneMap BGRA8 输出
+//   probe_testhost.exe --integration       测试 WgcHookManager 帧池拦截、FP16 升级与 ToneMap BGRA8 输出
 //   probe_testhost.exe --inproc            自加载探针（LoadLibrary），创建设备+测试纹理，等待采样
 //   probe_testhost.exe --remote [--secs N] 等待被注入后创建设备+纹理，等待退出
 
@@ -503,7 +503,7 @@ static int RunSafetyTests()
 
     printf("\n=================================================================\n");
     if (failed == 0) {
-        printf("  Gate P6 全部测试项均通过: 自动检测、配置与故障保护就绪 (GO)!\n");
+        printf("  自动检测、配置与故障保护测试项全部通过 (PASS)!\n");
     } else {
         printf("  [FAIL] 有 %d 项测试未通过！\n", failed);
     }
@@ -912,7 +912,7 @@ static int RunP7MatrixTests()
 
     printf("\n=================================================================\n");
     if (failed == 0) {
-        printf("  Gate P7 全部测试项均通过: 功能矩阵、色彩画质与稳定性达标 (GO)!\n");
+        printf("  集成测试项全部通过: 功能矩阵、色彩画质与稳定性达标 (PASS)!\n");
     } else {
         printf("  [FAIL] 有 %d 项测试未通过！\n", failed);
     }
