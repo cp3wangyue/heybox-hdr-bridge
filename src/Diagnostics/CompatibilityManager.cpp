@@ -3,6 +3,7 @@
 
 #include <roapi.h>
 #include <winstring.h>
+#include <shlobj.h>
 #include <cstdio>
 #include <fstream>
 #include <algorithm>
@@ -175,6 +176,12 @@ std::wstring CompatibilityManager::ResolveDatabasePath(const std::wstring& custo
             GetFullPathNameW(path, MAX_PATH, fullPath, nullptr);
             return fullPath;
         }
+    }
+
+    wchar_t localApp[MAX_PATH]{};
+    if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localApp) == S_OK) {
+        fs::path p = fs::path(localApp) / L"HeyboxHDRBridge" / L"compat.json";
+        if (fs::exists(p)) return p.wstring();
     }
     return L"";
 }
@@ -426,7 +433,7 @@ CompatibilityDecision CompatibilityManager::Evaluate(
 
     // 白名单比对 (compat.json)
     for (const auto& rule : m_rules) {
-        if (rule.name == "HeyboxChat" && (MatchVersionString(rule.version, d.heyboxVersion) || d.heyboxVersion == "1.56.0")) {
+        if (rule.name == "HeyboxChat" && (MatchVersionString(rule.version, d.heyboxVersion) || d.heyboxVersion == "1.56.0" || d.heyboxVersion == "1.57.0")) {
             d.heyboxVerified = true;
             for (const auto& [mod, ver] : rule.verifiedModules) {
                 if (mod == "VolcEngineRTC.dll" && MatchVersionString(ver, d.rtcVersion)) {

@@ -6,6 +6,23 @@
   "allowedClients": [
     {
       "name": "HeyboxChat",
+      "version": "1.57.0",
+      "status": "Verified",
+      "verifiedModules": [
+        {
+          "module": "VolcEngineRTC.dll",
+          "version": "3.58.1.63260",
+          "status": "Verified"
+        },
+        {
+          "module": "VolcEngineRTC.dll",
+          "version": "3.58.1.0",
+          "status": "Verified"
+        }
+      ]
+    },
+    {
+      "name": "HeyboxChat",
       "version": "1.56.0",
       "status": "Verified",
       "verifiedModules": [

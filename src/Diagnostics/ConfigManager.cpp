@@ -2,6 +2,7 @@
 #include "Diagnostics/ConfigManager.h"
 
 #include <windows.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <vector>
 
@@ -78,6 +79,14 @@ std::wstring ConfigManager::ResolveConfigPath(const std::wstring& customPath)
             wchar_t fullPath[MAX_PATH]{};
             GetFullPathNameW(p, MAX_PATH, fullPath, nullptr);
             return fullPath;
+        }
+    }
+
+    wchar_t localApp[MAX_PATH]{};
+    if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localApp) == S_OK) {
+        std::wstring p = std::wstring(localApp) + L"\\HeyboxHDRBridge\\hdrfix.ini";
+        if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            return p;
         }
     }
     return L"";

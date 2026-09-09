@@ -37,7 +37,7 @@ HDR 关闭、格式未知或安全检查失败时，目标是直接走原生帧�
 
 | 项目 | 已验证环境 |
 | --- | --- |
-| 小黑盒客户端 | HeyboxChat 1.56.0 |
+| 小黑盒客户端 | HeyboxChat 1.56.0 / 1.57.0 |
 | RTC 模块 | VolcEngineRTC.dll 3.58.1.63260 |
 | 捕获路径 | Windows Graphics Capture / D3D11 |
 | HDR 输入 | FP16 scRGB (80~10000 nits) |
@@ -55,10 +55,10 @@ HDR 关闭、格式未知或安全检查失败时，目标是直接走原生帧�
 dist/install.bat
 ```
 
-安装器会把必要文件复制到：
+安装器会把必要文件复制到独立持久化目录（不受小黑盒自身热更新或重装影响）：
 
 ```text
-%LOCALAPPDATA%\Qingfeng\HeyboxChat\plugins\hdrfix
+%LOCALAPPDATA%\HeyboxHDRBridge
 ```
 
 并在桌面创建：

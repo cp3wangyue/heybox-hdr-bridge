@@ -17,6 +17,7 @@
 #include <wrl/client.h>
 
 #include <cstdio>
+#include <clocale>
 #include <io.h>
 #include <fcntl.h>
 #include <filesystem>
@@ -33,8 +34,8 @@ namespace {
 constexpr wchar_t kSessionMutexName[] = L"Local\\heybox_hdr_bridge_session";
 constexpr wchar_t kSessionStopEventName[] = L"Local\\heybox_hdr_bridge_stop";
 constexpr wchar_t kLegacyAutoRunValue[] = L"HeyboxHDRFix";
-constexpr wchar_t kShortcutName[] = L"小黑盒 (HDR Bridge).lnk";
-constexpr wchar_t kLegacyShortcutName[] = L"小黑盒语音 (带HDR修复).lnk";
+constexpr wchar_t kShortcutName[] = L"\u5C0F\u9ED1\u76D2 (HDR Bridge).lnk";
+constexpr wchar_t kLegacyShortcutName[] = L"\u5C0F\u9ED1\u76D2\u8BED\u97F3 (\u5E26HDR\u4FEE\u590D).lnk";
 
 std::string ToUtf8(const std::wstring& wstr)
 {
@@ -43,6 +44,35 @@ std::string ToUtf8(const std::wstring& wstr)
     std::string res(sizeNeeded, 0);
     ::WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), res.data(), sizeNeeded, nullptr, nullptr);
     return res;
+}
+
+void LogLoader(const char* fmt, ...)
+{
+    wchar_t tempDir[MAX_PATH]{};
+    ::GetTempPathW(MAX_PATH, tempDir);
+    std::wstring logPath = std::wstring(tempDir) + L"hdrfix_loader.log";
+
+    SYSTEMTIME st{};
+    ::GetLocalTime(&st);
+
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    char line[1200];
+    int len = snprintf(line, sizeof(line), "[%02u:%02u:%02u.%03u] [PID:%5lu] %s\r\n",
+                       st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                       ::GetCurrentProcessId(), buf);
+
+    ::OutputDebugStringA(line);
+
+    FILE* fp = _wfopen(logPath.c_str(), L"a");
+    if (fp) {
+        fwrite(line, 1, len, fp);
+        fclose(fp);
+    }
 }
 
 std::wstring GetSelfDirectory()
@@ -54,6 +84,15 @@ std::wstring GetSelfDirectory()
     return (pos != std::wstring::npos) ? p.substr(0, pos + 1) : L"";
 }
 
+std::wstring GetBridgeInstallDir()
+{
+    wchar_t localApp[MAX_PATH]{};
+    if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localApp) == S_OK) {
+        return (fs::path(localApp) / L"HeyboxHDRBridge").wstring();
+    }
+    return L"";
+}
+
 std::wstring GetHeyboxDefaultDir()
 {
     wchar_t localApp[MAX_PATH]{};
@@ -61,6 +100,44 @@ std::wstring GetHeyboxDefaultDir()
         fs::path p = fs::path(localApp) / L"Qingfeng" / L"HeyboxChat";
         if (fs::exists(p / L"HeyboxChat.exe")) {
             return p.wstring();
+        }
+    }
+
+    // 备用检索：注册表卸载项
+    const wchar_t* subKeys[] = {
+        L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\HeyboxChat",
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\HeyboxChat"
+    };
+    for (const auto* subKey : subKeys) {
+        HKEY hKey = nullptr;
+        if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS ||
+            ::RegOpenKeyExW(HKEY_CURRENT_USER, subKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            wchar_t val[MAX_PATH]{};
+            DWORD valSize = sizeof(val);
+            if (::RegQueryValueExW(hKey, L"DisplayIcon", nullptr, nullptr, reinterpret_cast<LPBYTE>(val), &valSize) == ERROR_SUCCESS) {
+                fs::path p(val);
+                if (fs::exists(p)) {
+                    ::RegCloseKey(hKey);
+                    return p.parent_path().wstring();
+                }
+            }
+            valSize = sizeof(val);
+            if (::RegQueryValueExW(hKey, L"InstallLocation", nullptr, nullptr, reinterpret_cast<LPBYTE>(val), &valSize) == ERROR_SUCCESS) {
+                fs::path p(val);
+                if (fs::exists(p / L"HeyboxChat.exe")) {
+                    ::RegCloseKey(hKey);
+                    return p.wstring();
+                }
+            }
+            valSize = sizeof(val);
+            if (::RegQueryValueExW(hKey, L"UninstallString", nullptr, nullptr, reinterpret_cast<LPBYTE>(val), &valSize) == ERROR_SUCCESS) {
+                fs::path p(val);
+                if (fs::exists(p.parent_path() / L"HeyboxChat.exe")) {
+                    ::RegCloseKey(hKey);
+                    return p.parent_path().wstring();
+                }
+            }
+            ::RegCloseKey(hKey);
         }
     }
     return L"";
@@ -79,6 +156,7 @@ bool CreateShortcut(const std::wstring& shortcutPath, const std::wstring& target
                     const std::wstring& arguments, const std::wstring& iconPath,
                     const std::wstring& description)
 {
+    LogLoader("CreateShortcut: target=%s, lnk=%s", ToUtf8(targetExe).c_str(), ToUtf8(shortcutPath).c_str());
     HRESULT initHr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool needUninit = SUCCEEDED(initHr);
 
@@ -86,15 +164,17 @@ bool CreateShortcut(const std::wstring& shortcutPath, const std::wstring& target
     HRESULT hr = ::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
                                     IID_IShellLinkW, reinterpret_cast<void**>(shellLink.GetAddressOf()));
     if (FAILED(hr)) {
+        LogLoader("CreateShortcut: CoCreateInstance failed hr=0x%08lX", hr);
         if (needUninit) ::CoUninitialize();
         return false;
     }
 
+    std::wstring workDir = fs::path(targetExe).parent_path().wstring();
     shellLink->SetPath(targetExe.c_str());
     shellLink->SetArguments(arguments.c_str());
     shellLink->SetDescription(description.c_str());
-    shellLink->SetWorkingDirectory(fs::path(targetExe).parent_path().c_str());
-    shellLink->SetShowCmd(SW_HIDE);
+    shellLink->SetWorkingDirectory(workDir.c_str());
+    shellLink->SetShowCmd(SW_SHOWNORMAL);
 
     if (!iconPath.empty()) {
         shellLink->SetIconLocation(iconPath.c_str(), 0);
@@ -103,7 +183,12 @@ bool CreateShortcut(const std::wstring& shortcutPath, const std::wstring& target
     ComPtr<IPersistFile> persistFile;
     hr = shellLink.As(&persistFile);
     if (SUCCEEDED(hr)) {
+        std::error_code ec;
+        fs::remove(shortcutPath, ec);
         hr = persistFile->Save(shortcutPath.c_str(), TRUE);
+        LogLoader("CreateShortcut: persistFile->Save hr=0x%08lX (remove ec=%d)", hr, ec.value());
+    } else {
+        LogLoader("CreateShortcut: shellLink.As(&persistFile) failed hr=0x%08lX", hr);
     }
 
     if (needUninit) ::CoUninitialize();
@@ -153,35 +238,6 @@ bool IsDllLoaded(DWORD pid, const std::wstring& dllName)
     }
     ::CloseHandle(msnap);
     return found;
-}
-
-void LogLoader(const char* fmt, ...)
-{
-    wchar_t tempDir[MAX_PATH]{};
-    ::GetTempPathW(MAX_PATH, tempDir);
-    std::wstring logPath = std::wstring(tempDir) + L"hdrfix_loader.log";
-
-    SYSTEMTIME st{};
-    ::GetLocalTime(&st);
-
-    char buf[1024];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-
-    char line[1200];
-    int len = snprintf(line, sizeof(line), "[%02u:%02u:%02u.%03u] [PID:%5lu] %s\r\n",
-                       st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                       ::GetCurrentProcessId(), buf);
-
-    ::OutputDebugStringA(line);
-
-    FILE* fp = _wfopen(logPath.c_str(), L"a");
-    if (fp) {
-        fwrite(line, 1, len, fp);
-        fclose(fp);
-    }
 }
 
 bool InjectDll(DWORD pid, const std::wstring& dllFullPath)
@@ -318,6 +374,12 @@ int RunSessionCompanion(bool launchIfNeeded)
 
     std::wstring dllPath = (fs::path(GetSelfDirectory()) / L"hdrfix.dll").wstring();
     if (!fs::exists(dllPath)) {
+        std::wstring fallback = (fs::path(GetBridgeInstallDir()) / L"hdrfix.dll").wstring();
+        if (fs::exists(fallback)) {
+            dllPath = fallback;
+        }
+    }
+    if (!fs::exists(dllPath)) {
         LogLoader("hdrfix.dll not found at: %ls", dllPath.c_str());
         ::ReleaseMutex(hMutex);
         ::CloseHandle(hMutex);
@@ -383,59 +445,99 @@ int RunSessionCompanion(bool launchIfNeeded)
 
 int DoInstall()
 {
+    LogLoader("=== DoInstall started ===");
     printf("\n===================================================\n");
     printf("  HEYBOX HDR Bridge — 一键安装\n");
     printf("===================================================\n\n");
 
     std::wstring heyboxDir = GetHeyboxDefaultDir();
+    LogLoader("DoInstall: heyboxDir=%ls", heyboxDir.c_str());
     if (heyboxDir.empty()) {
-        printf("[错误] 未检测到 %%LOCALAPPDATA%%\\Qingfeng\\HeyboxChat\\HeyboxChat.exe\n");
+        printf("[错误] 未检测到小黑盒客户端安装目录 (HeyboxChat.exe)\n");
         return 1;
     }
 
-    fs::path pluginDir = fs::path(heyboxDir) / L"plugins" / L"hdrfix";
+    std::wstring installDir = GetBridgeInstallDir();
+    LogLoader("DoInstall: installDir=%ls", installDir.c_str());
+    if (installDir.empty()) {
+        printf("[错误] 无法获取 %%LOCALAPPDATA%% 目录\n");
+        return 1;
+    }
+
+    fs::path targetDir(installDir);
     std::error_code ec;
-    fs::create_directories(pluginDir, ec);
+    fs::create_directories(targetDir, ec);
     if (ec) {
-        printf("[错误] 无法创建插件目录: %s\n", ec.message().c_str());
+        printf("[错误] 无法创建独立安装目录: %s\n", ec.message().c_str());
+        LogLoader("DoInstall: create_directories failed ec=%d", ec.value());
         return 1;
     }
 
     std::wstring selfDir = GetSelfDirectory();
+    LogLoader("DoInstall: selfDir=%ls", selfDir.c_str());
     const std::vector<std::wstring> filesToCopy = {
         L"hdrfix.dll", L"hdrfix_loader.exe", L"hdrfix.ini", L"compat.json"
     };
 
-    printf("[1/3] 复制运行文件...\n");
+    printf("[1/3] 复制运行文件到独立持久化目录...\n");
+    printf("  安装路径: %s\n", ToUtf8(installDir).c_str());
+
+    bool runningFromTarget = false;
+    try {
+        if (!selfDir.empty() && fs::exists(selfDir) && fs::equivalent(selfDir, targetDir)) {
+            runningFromTarget = true;
+        }
+    } catch (...) {}
+
     for (const auto& file : filesToCopy) {
         fs::path src = fs::path(selfDir) / file;
-        fs::path dst = pluginDir / file;
+        fs::path dst = targetDir / file;
+        if (runningFromTarget && file == L"hdrfix_loader.exe") {
+            continue;
+        }
         if (!fs::exists(src)) {
+            if (fs::exists(dst)) {
+                continue;
+            }
             printf("  - [缺失] %s\n", ToUtf8(file).c_str());
+            LogLoader("DoInstall: file missing: %ls", file.c_str());
             return 1;
         }
         fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
         if (ec) {
             printf("  - [失败] %s: %s\n", ToUtf8(file).c_str(), ec.message().c_str());
+            LogLoader("DoInstall: copy_file failed for %ls: %s", file.c_str(), ec.message().c_str());
             return 1;
         }
     }
 
-    // 迁移旧版：明确移除曾经设计的全局开机自启动项。
-    printf("[2/3] 清理旧版全局自启动配置...\n");
+    // 迁移旧版：明确清理小黑盒内部旧插件目录以及开机自启动配置
+    printf("[2/3] 清理旧版历史配置与旧插件目录...\n");
     RemoveLegacyAutoRun();
+    fs::path oldPluginDir = fs::path(heyboxDir) / L"plugins" / L"hdrfix";
+    if (fs::exists(oldPluginDir)) {
+        ec.clear();
+        fs::remove_all(oldPluginDir, ec);
+        LogLoader("DoInstall: removed oldPluginDir (ec=%d)", ec.value());
+    }
 
     printf("[3/3] 创建“随小黑盒会话运行”的启动快捷方式...\n");
     std::wstring desktop = GetDesktopPath();
-    if (desktop.empty()) return 1;
+    LogLoader("DoInstall: desktop=%s", ToUtf8(desktop).c_str());
+    if (desktop.empty()) {
+        printf("[错误] 获取桌面路径失败。\n");
+        return 1;
+    }
 
-    fs::path installedLoader = pluginDir / L"hdrfix_loader.exe";
+    fs::path installedLoader = targetDir / L"hdrfix_loader.exe";
     fs::path heyboxExe = fs::path(heyboxDir) / L"HeyboxChat.exe";
     fs::path shortcut = fs::path(desktop) / kShortcutName;
 
+    LogLoader("DoInstall: Creating shortcut %s -> %s", ToUtf8(shortcut.wstring()).c_str(), ToUtf8(installedLoader.wstring()).c_str());
     if (!CreateShortcut(shortcut.wstring(), installedLoader.wstring(), L"--launch", heyboxExe.wstring(),
                         L"启动小黑盒，并仅在本次会话期间启用 HDR 屏幕共享修复")) {
         printf("[错误] 创建桌面快捷方式失败。\n");
+        LogLoader("DoInstall: CreateShortcut returned false!");
         return 1;
     }
 
@@ -443,7 +545,9 @@ int DoInstall()
     fs::remove(fs::path(desktop) / kLegacyShortcutName, ec);
 
     printf("\n安装完成。以后请从桌面的【小黑盒 (HDR Bridge)】启动。\n");
+    printf("补丁已安装至独立目录，小黑盒客户端更新不会导致快捷方式或修复补丁失效。\n");
     printf("不会注册开机常驻进程；伴随器只在小黑盒运行期间存在，并在小黑盒退出后自动结束。\n\n");
+    LogLoader("=== DoInstall completed successfully ===");
     return 0;
 }
 
@@ -471,18 +575,26 @@ int DoUninstall()
         fs::remove(fs::path(desktop) / kLegacyShortcutName, ec);
     }
 
+    // 清理旧版插件目录（如果在小黑盒内部）
     std::wstring heyboxDir = GetHeyboxDefaultDir();
     if (!heyboxDir.empty()) {
-        fs::path pluginDir = fs::path(heyboxDir) / L"plugins" / L"hdrfix";
+        fs::path oldPluginDir = fs::path(heyboxDir) / L"plugins" / L"hdrfix";
         ec.clear();
-        fs::remove_all(pluginDir, ec);
+        fs::remove_all(oldPluginDir, ec);
+    }
+
+    // 清理独立持久化安装目录
+    std::wstring installDir = GetBridgeInstallDir();
+    if (!installDir.empty() && fs::exists(installDir)) {
+        ec.clear();
+        fs::remove_all(installDir, ec);
         if (ec) {
-            printf("[提示] 插件文件仍被小黑盒占用。请先完全退出小黑盒，再重新执行卸载。\n");
+            printf("[提示] 部分文件可能仍被占用。请完全退出小黑盒后重新执行卸载。\n");
             return 2;
         }
     }
 
-    printf("卸载完成；没有保留开机自启动项或后台常驻守护。\n\n");
+    printf("卸载完成；已清理快捷方式与安装目录，没有保留开机自启动项或后台常驻守护。\n\n");
     return 0;
 }
 
@@ -494,6 +606,12 @@ int DoLaunch()
 int DoInject()
 {
     std::wstring dllPath = (fs::path(GetSelfDirectory()) / L"hdrfix.dll").wstring();
+    if (!fs::exists(dllPath)) {
+        std::wstring fallback = (fs::path(GetBridgeInstallDir()) / L"hdrfix.dll").wstring();
+        if (fs::exists(fallback)) {
+            dllPath = fallback;
+        }
+    }
     if (!fs::exists(dllPath)) {
         printf("[错误] 未找到 hdrfix.dll。\n");
         return 1;
@@ -514,12 +632,21 @@ int DoStatus()
     printf("  HEYBOX HDR Bridge — 状态\n");
     printf("===================================================\n\n");
 
+    std::wstring heyboxDir = GetHeyboxDefaultDir();
+    printf("[小黑盒路径]   : %s\n", heyboxDir.empty() ? "未找到" : ToUtf8(heyboxDir).c_str());
+
+    std::wstring installDir = GetBridgeInstallDir();
+    bool installed = !installDir.empty() && fs::exists(fs::path(installDir) / L"hdrfix_loader.exe");
+    printf("[补丁安装路径] : %s%s\n",
+           installDir.empty() ? "未配置" : ToUtf8(installDir).c_str(),
+           installed ? " (已安装)" : " (未安装/未找到)");
+
     HANDLE hSession = ::OpenMutexW(SYNCHRONIZE, FALSE, kSessionMutexName);
-    printf("[会话伴随器] : %s\n", hSession ? "运行中（仅随当前小黑盒会话）" : "未运行");
+    printf("[会话伴随器]   : %s\n", hSession ? "运行中（仅随当前小黑盒会话）" : "未运行");
     if (hSession) ::CloseHandle(hSession);
 
     auto pids = FindHeyboxPids();
-    printf("[小黑盒进程] : %s（%zu 个）\n", pids.empty() ? "未运行" : "运行中", pids.size());
+    printf("[小黑盒进程]   : %s（%zu 个）\n", pids.empty() ? "未运行" : "运行中", pids.size());
     for (DWORD pid : pids) {
         bool vertc = IsDllLoaded(pid, L"VolcEngineRTC.dll");
         bool fixed = IsDllLoaded(pid, L"hdrfix.dll");
@@ -534,6 +661,7 @@ int DoStatus()
 
 int RunLoader(int argc, wchar_t** argv)
 {
+    setlocale(LC_ALL, ".utf8");
     bool isConsoleCommand = false;
     if (argc > 1) {
         std::wstring a = argv[1];
@@ -562,6 +690,8 @@ int RunLoader(int argc, wchar_t** argv)
             freopen_s(&fp, "CONOUT$", "w", stdout);
             freopen_s(&fp, "CONOUT$", "w", stderr);
             freopen_s(&fp, "CONIN$", "r", stdin);
+            if (stdout) setvbuf(stdout, nullptr, _IONBF, 0);
+            if (stderr) setvbuf(stderr, nullptr, _IONBF, 0);
         }
         ::SetConsoleOutputCP(65001);
         ::SetConsoleCP(65001);
